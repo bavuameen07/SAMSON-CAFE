@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+@theme {
+  --color-paper: #f7f3ec;
+  --color-ink: #241a15;
+  --color-coffee: #3b2418;
+  --color-coffee-hover: #593722;
+  --color-clay: #8b6f47;
+  --color-line: #e9e1d5;
+  --color-muted: #81776b;
+  --color-cream: #efe8dd;
+  --color-shell: #f5f6f8;
+  --color-success: #2e6b4f;
+  --color-danger: #a84032;
+  --color-warning: #9a6226;
+  --color-faint: #aaaaaa;
+
+  --font-sans: var(--font-dm-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-playfair), Georgia, serif;
+
+  --shadow-card: 0 12px 34px #39251712;
+  --shadow-card-hover: 0 18px 42px #39251719;
+}
+
+@layer base {
+  html {
+    min-height: 100%;
+    background-color: var(--color-paper);
+  }
+
+  body {
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .spinner {
+    width: 20px;
+    height: 20px;
+    border: 2px solid #e4dacb;
+    border-top-color: var(--color-clay);
+    border-radius: 50%;
+    animation: samson-spin 0.75s linear infinite;
+  }
+
+  @keyframes samson-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .skeleton {
+    height: 350px;
+    background-image: linear-gradient(100deg, #eee8df 30%, #f8f5f0 50%, #eee8df 70%);
+    background-size: 200% 100%;
+    animation: samson-sheen 1.4s infinite;
+  }
+
+  @keyframes samson-sheen {
+    to {
+      background-position: -200% 0;
+    }
+  }
+}

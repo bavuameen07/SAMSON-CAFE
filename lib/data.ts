@@ -1,0 +1,80 @@
+import "server-only";
+import { cache } from "react";
+import { withAdminToken } from "./admin-session";
+import { config, displaySettings } from "./config";
+import { withProductDetails } from "./normalize";
+import { getOrders, getProducts, SheetsError } from "./sheets";
+import type { DisplaySettings, Order, Product } from "./types";
+
+export type MenuData = {
+  products: Product[];
+  settings: DisplaySettings;
+  connected: boolean;
+  error: string | null;
+};
+
+export type AdminData = {
+  products: Product[];
+  orders: Order[];
+  settings: DisplaySettings;
+  connected: boolean;
+  error: string | null;
+};
+
+function notConfiguredMessage(): string | null {
+  if (!config.googleScriptUrl) {
+    return "Google Apps Script is not configured. Set GOOGLE_SCRIPT_URL in .env.local to load the live menu.";
+  }
+  if (!config.adminPassword) {
+    return "ADMIN_PASSWORD is not set in .env.local, so admin API calls cannot be authorised.";
+  }
+  return null;
+}
+
+/** `cache` dedupes this across the layout and page of a single admin request. */
+export const loadMenu = cache(async (): Promise<MenuData> => {
+  const settings = displaySettings();
+  try {
+    const products = (await getProducts()).filter((product) => product.enabled);
+    return { products, settings, connected: true, error: null };
+  } catch (error) {
+    const reason = notConfiguredMessage();
+    return {
+      products: [],
+      settings,
+      connected: false,
+      error:
+        reason ??
+        (error instanceof SheetsError
+          ? `We couldn't load the cafe data. ${error.message}`
+          : "We couldn't load the cafe data. Check the Apps Script deployment and try again."),
+    };
+  }
+});
+
+export const loadAdminData = cache(async (): Promise<AdminData> => {
+  const settings = displaySettings();
+  try {
+    const [products, orders] = await Promise.all([getProducts(), withAdminToken(getOrders)]);
+    return {
+      products,
+      orders: withProductDetails(orders, products),
+      settings,
+      connected: true,
+      error: null,
+    };
+  } catch (error) {
+    const reason = notConfiguredMessage();
+    return {
+      products: [],
+      orders: [],
+      settings,
+      connected: false,
+      error:
+        reason ??
+        (error instanceof SheetsError
+          ? error.message
+          : "We couldn't reach Google Sheets. Check the Apps Script deployment and try again."),
+    };
+  }
+});
