@@ -23,10 +23,10 @@ export type AdminData = {
 
 function notConfiguredMessage(): string | null {
   if (!config.googleScriptUrl) {
-    return "Google Apps Script is not configured. Set GOOGLE_SCRIPT_URL in .env.local to load the live menu.";
+    return "Google Apps Script is not configured. Set googleScriptUrl in lib/config.ts to load the live menu.";
   }
   if (!config.adminPassword) {
-    return "ADMIN_PASSWORD is not set in .env.local, so admin API calls cannot be authorised.";
+    return "adminPassword is not set in lib/config.ts, so admin API calls cannot be authorised.";
   }
   return null;
 }

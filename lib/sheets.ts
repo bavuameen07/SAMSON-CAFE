@@ -20,11 +20,12 @@ export class SheetsError extends Error {
 export class UnknownActionError extends SheetsError {
   readonly actions: string[];
 
-  constructor(actions: string[] = []) {
+  constructor(actions: string[] = [], detail?: string) {
     super(
-      actions.length > 0
-        ? `The deployed web app does not implement this action. It supports: ${actions.join(", ")}.`
-        : "The deployed web app does not implement this action.",
+      detail ??
+        (actions.length > 0
+          ? `The deployed web app does not implement this action. It supports: ${actions.join(", ")}.`
+          : "The deployed web app does not implement this action."),
     );
     this.name = "UnknownActionError";
     this.actions = actions;
@@ -41,7 +42,7 @@ type Params = Record<string, string | number | boolean | undefined>;
 function endpoint(): string {
   if (!isSheetsConfigured) {
     throw new SheetsError(
-      "GOOGLE_SCRIPT_URL is not set. Add it to .env.local and restart the dev server.",
+      "No Google Apps Script URL is configured. Set googleScriptUrl in lib/config.ts.",
     );
   }
   return config.googleScriptUrl;
@@ -107,11 +108,16 @@ async function unwrap<T>(response: Response): Promise<T> {
   };
 
   if (envelope.ok === false) {
-    throw new SheetsError(
+    const message =
       typeof envelope.message === "string" && envelope.message
         ? envelope.message
-        : "The Apps Script request failed.",
-    );
+        : "The Apps Script request failed.";
+    // A current build that lacks the action answers with ok:false. Treat that
+    // the same as the legacy banner so callers can fall back or report it.
+    if (/unknown api action/i.test(message)) {
+      throw new UnknownActionError([], message);
+    }
+    throw new SheetsError(message);
   }
   if (envelope.ok === true && envelope.data !== undefined) {
     return envelope.data as T;
@@ -213,21 +219,54 @@ export async function getProducts(): Promise<Product[]> {
   );
 }
 
+export type DeploymentInfo = {
+  build: string;
+  actions: string[];
+};
+
+/**
+ * Asks the deployment which build it is serving. The current Code.gs answers
+ * this; a deployment from before this action existed cannot, which is itself a
+ * reliable signal that it needs replacing.
+ */
+export async function getDeploymentInfo(): Promise<DeploymentInfo> {
+  const info = await live<{ build?: unknown; actions?: unknown }>("version");
+  return {
+    build: typeof info.build === "string" ? info.build : "unknown",
+    actions: Array.isArray(info.actions)
+      ? info.actions.filter((entry): entry is string => typeof entry === "string")
+      : [],
+  };
+}
+
+/** Turns a rejected action into a message naming the build that refused it. */
+async function staleDeploymentMessage(action: string, cause: UnknownActionError): Promise<string> {
+  let detail = cause.message;
+  try {
+    const info = await getDeploymentInfo();
+    detail = info.actions.includes(action)
+      ? `The deployment reports build "${info.build}" and lists "${action}", but the call returned no order. Redeploy apps-script/Code.gs, then confirm the /exec URL in lib/config.ts points at that deployment.`
+      : `The deployment reports build "${info.build}" and does not support "${action}". Redeploy apps-script/Code.gs as a new version, then put the new /exec URL in lib/config.ts.`;
+  } catch {
+    // The version probe failed too, so this deployment predates the action and
+    // the original message is the best available detail.
+  }
+  return `This order could not be placed. ${detail}`;
+}
+
 /**
  * Stock is revalidated and decremented inside Apps Script under a script lock.
  *
  * Unlike reads, there is no legacy fallback: an older deployment answers an
  * unusable placeOrder with its generic banner instead of an order, so this
- * reports that plainly rather than letting the customer retry a broken call.
+ * reports the mismatch precisely rather than letting the customer retry.
  */
 export async function placeOrder(itemId: string, quantity: number): Promise<Order> {
   try {
     return normalizeOrder(await live<unknown>("placeOrder", { itemId, quantity }));
   } catch (error) {
     if (error instanceof UnknownActionError) {
-      throw new SheetsError(
-        "The deployed web app did not accept this order. Its placeOrder handler is not the current build, so orders cannot be created. Redeploy apps-script/Code.gs.",
-      );
+      throw new SheetsError(await staleDeploymentMessage("placeOrder", error));
     }
     throw error;
   }
