@@ -102,6 +102,7 @@ async function unwrap<T>(response: Response): Promise<T> {
     data?: unknown;
     items?: unknown;
     orders?: unknown;
+    order?: unknown;
     message?: unknown;
     success?: unknown;
     actions?: unknown;
@@ -124,10 +125,13 @@ async function unwrap<T>(response: Response): Promise<T> {
   }
 
   // Legacy envelope. A bare `{ success: true, actions: [...] }` carries no
-  // rows, which means the action itself is unrecognised by this deployment.
+  // rows and no created object, which means the action itself is unrecognised
+  // by this deployment.
   if (envelope.success === true) {
     if (Array.isArray(envelope.items)) return envelope.items as T;
     if (Array.isArray(envelope.orders)) return envelope.orders as T;
+    // placeOrder answers `{ success, message, order }` on this deployment.
+    if (envelope.order !== undefined) return envelope.order as T;
     if (envelope.data !== undefined) return envelope.data as T;
     throw new UnknownActionError(
       Array.isArray(envelope.actions)
@@ -182,6 +186,29 @@ function cached<T>(action: string, params: Params, revalidate: number, tags: str
   return send(buildUrl(action, params), { next: { revalidate, tags } }, action, CACHED_TIMEOUT_MS).then(
     (response) => unwrap<T>(response),
   );
+}
+
+/**
+ * Writes go out as a POST carrying a JSON body.
+ *
+ * The deployed handler only creates orders from `doPost`. A GET placeOrder is
+ * answered with the generic `{ success, message, actions }` banner rather than
+ * an order, so the action and its arguments must travel in the JSON body as
+ * `{ action, itemId, quantity }`. The action is repeated in the query string
+ * so the call is self-describing in the Apps Script execution log.
+ */
+function postJson<T>(action: string, body: Params = {}): Promise<T> {
+  return send(
+    buildUrl(action),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...body }),
+      cache: "no-store",
+    },
+    action,
+    LIVE_TIMEOUT_MS,
+  ).then((response) => unwrap<T>(response));
 }
 
 function sha256Hex(value: string): string {
@@ -239,34 +266,31 @@ export async function getDeploymentInfo(): Promise<DeploymentInfo> {
   };
 }
 
-/** Turns a rejected action into a message naming the build that refused it. */
-async function staleDeploymentMessage(action: string, cause: UnknownActionError): Promise<string> {
-  let detail = cause.message;
-  try {
-    const info = await getDeploymentInfo();
-    detail = info.actions.includes(action)
-      ? `The deployment reports build "${info.build}" and lists "${action}", but the call returned no order. Redeploy apps-script/Code.gs, then confirm the /exec URL in lib/config.ts points at that deployment.`
-      : `The deployment reports build "${info.build}" and does not support "${action}". Redeploy apps-script/Code.gs as a new version, then put the new /exec URL in lib/config.ts.`;
-  } catch {
-    // The version probe failed too, so this deployment predates the action and
-    // the original message is the best available detail.
-  }
-  return `This order could not be placed. ${detail}`;
-}
-
 /**
- * Stock is revalidated and decremented inside Apps Script under a script lock.
+ * Creates an order through the deployed `placeOrder` action.
  *
- * Unlike reads, there is no legacy fallback: an older deployment answers an
- * unusable placeOrder with its generic banner instead of an order, so this
- * reports the mismatch precisely rather than letting the customer retry.
+ * Verified against the live web app: it reads a POST JSON body of
+ * `{ action, itemId, quantity }` and answers
+ * `{ success: true, message: "Order placed successfully", order: {...} }`.
+ * Price, total and payment status are derived server-side from the Items sheet,
+ * so they are deliberately not sent and cannot be forged by the browser. A GET
+ * to the same action returns the generic banner and creates nothing.
  */
 export async function placeOrder(itemId: string, quantity: number): Promise<Order> {
   try {
-    return normalizeOrder(await live<unknown>("placeOrder", { itemId, quantity }));
+    return normalizeOrder(await postJson<unknown>("placeOrder", { itemId, quantity }));
   } catch (error) {
     if (error instanceof UnknownActionError) {
-      throw new SheetsError(await staleDeploymentMessage("placeOrder", error));
+      // The banner means this deployment advertised placeOrder but did not
+      // create an order from it, so name the build rather than blame the cart.
+      let detail = `It answered the POST with its generic banner instead of an order, so it does not create orders. It advertises: ${error.actions.join(", ") || "no actions"}.`;
+      try {
+        const info = await getDeploymentInfo();
+        detail += ` It reports build "${info.build}".`;
+      } catch {
+        // No version action on this deployment; the banner detail stands.
+      }
+      throw new SheetsError(`This order could not be placed. ${detail}`);
     }
     throw error;
   }
