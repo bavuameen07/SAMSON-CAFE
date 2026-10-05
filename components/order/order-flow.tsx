@@ -5,36 +5,12 @@ import Link from "next/link";
 import { placeOrderAction } from "@/app/actions";
 import { ProductImage } from "@/components/product-image";
 import { buttonClasses } from "@/components/ui/button";
-import { inputClasses, labelClasses, textareaClasses } from "@/components/ui/field";
 import { formatDateTime, formatMoney } from "@/lib/format";
-import {
-  emptyCustomer,
-  type Customer,
-  type DisplaySettings,
-  type Order,
-  type OrderType,
-  type Product,
-} from "@/lib/types";
+import type { DisplaySettings, Order, Product } from "@/lib/types";
 
-const STEP_LABELS = ["Product", "Details", "Confirm"] as const;
-const ORDER_TYPES: readonly OrderType[] = ["Pickup", "Delivery"];
+const STEP_LABELS = ["Product", "Confirm"] as const;
 
-type Step = 1 | 2 | 3;
-
-function validateCustomer(customer: Customer, orderType: OrderType): string | null {
-  if (!customer.name.trim()) return "Please enter your name.";
-  if (!/^\+?[0-9\s()-]{8,16}$/.test(customer.phone.trim())) {
-    return "Please enter a valid phone number.";
-  }
-  if (!/^\S+@\S+\.\S+$/.test(customer.email.trim())) {
-    return "Please enter a valid email address.";
-  }
-  if (orderType === "Delivery") {
-    if (!customer.address.trim()) return "Please enter a delivery address.";
-    if (!/^\d{6}$/.test(customer.pincode.trim())) return "Please enter a 6-digit pincode.";
-  }
-  return null;
-}
+type Step = 1 | 2;
 
 function Stepper({ current }: { current: number }) {
   return (
@@ -77,8 +53,6 @@ type OrderFlowProps = {
 export function OrderFlow({ product, settings }: OrderFlowProps) {
   const [step, setStep] = useState<Step>(1);
   const [quantity, setQuantity] = useState(1);
-  const [orderType, setOrderType] = useState<OrderType>("Pickup");
-  const [customer, setCustomer] = useState<Customer>(emptyCustomer);
   const [error, setError] = useState("");
   const [placedOrder, setPlacedOrder] = useState<Order | null>(null);
   const [pending, startTransition] = useTransition();
@@ -86,27 +60,13 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
   const total = product.price * quantity;
   const soldOut = product.stock < 1;
 
-  function updateCustomer(field: keyof Customer, value: string) {
-    setCustomer((current) => ({ ...current, [field]: value }));
-  }
-
-  function goToDetails() {
+  function goToConfirm() {
     if (quantity < 1 || quantity > product.stock) {
       setError("Please select a valid quantity.");
       return;
     }
     setError("");
     setStep(2);
-  }
-
-  function goToConfirm() {
-    const problem = validateCustomer(customer, orderType);
-    if (problem) {
-      setError(problem);
-      return;
-    }
-    setError("");
-    setStep(3);
   }
 
   function placeOrder() {
@@ -253,7 +213,7 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
               </Link>
               <button
                 type="button"
-                onClick={goToDetails}
+                onClick={goToConfirm}
                 disabled={soldOut}
                 className={buttonClasses("primary", "w-full min-[601px]:w-auto")}
               >
@@ -266,167 +226,7 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
         {step === 2 ? (
           <>
             <div className="text-[11px] font-bold tracking-[.16em] text-clay uppercase">
-              Step 2 · Customer details
-            </div>
-            <h2 className="mt-[7px] mb-5 font-serif text-[21px] font-semibold text-coffee">
-              Where should we reach you?
-            </h2>
-
-            <div className="grid grid-cols-1 gap-[17px] min-[601px]:grid-cols-2">
-              <div className="flex flex-col gap-[7px]">
-                <label htmlFor="customer-name" className={labelClasses}>
-                  Full name
-                </label>
-                <input
-                  id="customer-name"
-                  autoComplete="name"
-                  value={customer.name}
-                  onChange={(event) => updateCustomer("name", event.target.value)}
-                  placeholder="Your name"
-                  required
-                  className={inputClasses}
-                />
-              </div>
-
-              <div className="flex flex-col gap-[7px]">
-                <label htmlFor="customer-phone" className={labelClasses}>
-                  Phone number
-                </label>
-                <input
-                  id="customer-phone"
-                  inputMode="tel"
-                  autoComplete="tel"
-                  value={customer.phone}
-                  onChange={(event) => updateCustomer("phone", event.target.value)}
-                  placeholder="10-digit phone number"
-                  required
-                  className={inputClasses}
-                />
-              </div>
-
-              <div className="flex flex-col gap-[7px] min-[601px]:col-span-2">
-                <label htmlFor="customer-email" className={labelClasses}>
-                  Email
-                </label>
-                <input
-                  id="customer-email"
-                  type="email"
-                  autoComplete="email"
-                  value={customer.email}
-                  onChange={(event) => updateCustomer("email", event.target.value)}
-                  placeholder="you@example.com"
-                  required
-                  className={inputClasses}
-                />
-              </div>
-
-              <div className="flex flex-col gap-[7px] min-[601px]:col-span-2">
-                <span className={labelClasses}>Order type</span>
-                <div className="flex gap-[7px] min-[601px]:gap-[10px]">
-                  {ORDER_TYPES.map((type) => (
-                    <label
-                      key={type}
-                      className={`flex flex-1 cursor-pointer items-center gap-[9px] rounded-[9px] border px-2 py-[11px] text-xs min-[601px]:px-[13px] min-[601px]:py-[13px] min-[601px]:text-[15px] ${
-                        orderType === type ? "border-clay bg-[#f7f2ea]" : "border-line"
-                      }`}
-                    >
-                      <input
-                        type="radio"
-                        name="order-type"
-                        value={type}
-                        checked={orderType === type}
-                        onChange={() => setOrderType(type)}
-                        className="accent-coffee"
-                      />
-                      {type}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              {orderType === "Delivery" ? (
-                <>
-                  <div className="flex flex-col gap-[7px] min-[601px]:col-span-2">
-                    <label htmlFor="address" className={labelClasses}>
-                      Address
-                    </label>
-                    <input
-                      id="address"
-                      autoComplete="street-address"
-                      value={customer.address}
-                      onChange={(event) => updateCustomer("address", event.target.value)}
-                      placeholder="House / street / area"
-                      className={inputClasses}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-[7px]">
-                    <label htmlFor="landmark" className={labelClasses}>
-                      Landmark
-                    </label>
-                    <input
-                      id="landmark"
-                      value={customer.landmark}
-                      onChange={(event) => updateCustomer("landmark", event.target.value)}
-                      placeholder="Nearby landmark"
-                      className={inputClasses}
-                    />
-                  </div>
-                  <div className="flex flex-col gap-[7px]">
-                    <label htmlFor="pincode" className={labelClasses}>
-                      Pincode
-                    </label>
-                    <input
-                      id="pincode"
-                      inputMode="numeric"
-                      value={customer.pincode}
-                      onChange={(event) => updateCustomer("pincode", event.target.value)}
-                      placeholder="6-digit pincode"
-                      className={inputClasses}
-                    />
-                  </div>
-                </>
-              ) : null}
-
-              <div className="flex flex-col gap-[7px] min-[601px]:col-span-2">
-                <label htmlFor="note" className={labelClasses}>
-                  Order note <span className="font-normal text-muted">(optional)</span>
-                </label>
-                <textarea
-                  id="note"
-                  value={customer.note}
-                  onChange={(event) => updateCustomer("note", event.target.value)}
-                  placeholder="Anything we should know?"
-                  className={textareaClasses}
-                />
-              </div>
-            </div>
-
-            <div className="mt-[18px] flex flex-col-reverse justify-between gap-3 min-[601px]:flex-row">
-              <button
-                type="button"
-                onClick={() => {
-                  setError("");
-                  setStep(1);
-                }}
-                className={buttonClasses("secondary", "w-full min-[601px]:w-auto")}
-              >
-                BACK
-              </button>
-              <button
-                type="button"
-                onClick={goToConfirm}
-                className={buttonClasses("primary", "w-full min-[601px]:w-auto")}
-              >
-                CONTINUE
-              </button>
-            </div>
-          </>
-        ) : null}
-
-        {step === 3 ? (
-          <>
-            <div className="text-[11px] font-bold tracking-[.16em] text-clay uppercase">
-              Step 3 · Confirm order
+              Step 2 · Confirm order
             </div>
             <h2 className="mt-[7px] mb-5 font-serif text-[21px] font-semibold text-coffee">
               Everything look right?
@@ -434,7 +234,7 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
 
             <div className="grid grid-cols-1 gap-[22px] min-[601px]:grid-cols-[1.2fr_.8fr]">
               <div>
-                <div className="mb-[17px] border-b border-line pt-0.5 pb-[17px]">
+                <div className="border-b border-line pt-0.5 pb-[17px]">
                   <h3 className="mb-3 text-[11px] tracking-[.1em] text-clay uppercase">Your order</h3>
                   <div className="flex justify-between gap-3 py-[5px] text-[13px]">
                     <span className="text-muted">Product</span>
@@ -453,53 +253,6 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
                     <strong>{formatMoney(product.price, settings.currency)} each</strong>
                   </div>
                 </div>
-
-                <div className="mb-[17px] border-b border-line pt-0.5 pb-[17px]">
-                  <h3 className="mb-3 text-[11px] tracking-[.1em] text-clay uppercase">Your details</h3>
-                  <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                    <span className="text-muted">Name</span>
-                    <strong>{customer.name}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                    <span className="text-muted">Phone</span>
-                    <strong>{customer.phone}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                    <span className="text-muted">Email</span>
-                    <strong>{customer.email}</strong>
-                  </div>
-                </div>
-
-                <div className="pt-0.5">
-                  <h3 className="mb-3 text-[11px] tracking-[.1em] text-clay uppercase">{orderType}</h3>
-                  {orderType === "Delivery" ? (
-                    <>
-                      <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                        <span className="text-muted">Address</span>
-                        <strong>{customer.address}</strong>
-                      </div>
-                      <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                        <span className="text-muted">Landmark</span>
-                        <strong>{customer.landmark || "—"}</strong>
-                      </div>
-                      <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                        <span className="text-muted">Pincode</span>
-                        <strong>{customer.pincode}</strong>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                      <span className="text-muted">Collect at Samson Cafe</span>
-                      <strong>Pickup</strong>
-                    </div>
-                  )}
-                  {customer.note ? (
-                    <div className="flex justify-between gap-3 py-[5px] text-[13px]">
-                      <span className="text-muted">Note</span>
-                      <strong>{customer.note}</strong>
-                    </div>
-                  ) : null}
-                </div>
               </div>
 
               <div className="self-start rounded-[10px] bg-paper p-[18px]">
@@ -515,7 +268,9 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
                     {formatMoney(total, settings.currency)}
                   </strong>
                 </div>
-                <p className="mt-[9px] mb-0 text-xs text-muted">Pay at {orderType.toLowerCase()}.</p>
+                <p className="mt-[9px] mb-0 text-xs text-muted">
+                  Pay when you collect your order.
+                </p>
               </div>
             </div>
 
@@ -524,7 +279,7 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
                 type="button"
                 onClick={() => {
                   setError("");
-                  setStep(2);
+                  setStep(1);
                 }}
                 className={buttonClasses("secondary", "w-full min-[601px]:w-auto")}
               >
