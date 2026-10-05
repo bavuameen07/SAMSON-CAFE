@@ -10,6 +10,7 @@ import {
   passwordMatches,
   withAdminToken,
 } from "@/lib/admin-session";
+import { resolveProductImage } from "@/lib/product-images";
 import {
   createProduct,
   placeOrder,
@@ -109,7 +110,14 @@ export async function createProductAction(formData: FormData): Promise<ActionRes
     const parsed = parseDraft(formData);
     if (!parsed.ok) return { ok: false, error: parsed.error };
 
-    const product = await withAdminToken((token) => createProduct(token, parsed.draft));
+    // Resolve the picture from the new product's name and store that URL on the
+    // row. The sheet then records which image the product uses, so the
+    // storefront serves the same picture without resolving it again.
+    const draft: ProductDraft = parsed.draft.image
+      ? parsed.draft
+      : { ...parsed.draft, image: resolveProductImage(parsed.draft.name).url };
+
+    const product = await withAdminToken((token) => createProduct(token, draft));
     refreshStorefront();
     refreshAdminViews();
     return { ok: true, data: product };

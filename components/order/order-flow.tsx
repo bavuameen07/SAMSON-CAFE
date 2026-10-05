@@ -6,7 +6,7 @@ import { placeOrderAction } from "@/app/actions";
 import { ProductImage } from "@/components/product-image";
 import { buttonClasses } from "@/components/ui/button";
 import { formatDateTime, formatMoney } from "@/lib/format";
-import type { DisplaySettings, Order, Product } from "@/lib/types";
+import type { DisplayProduct, DisplaySettings, Order } from "@/lib/types";
 
 const STEP_LABELS = ["Product", "Confirm"] as const;
 
@@ -46,7 +46,7 @@ function Stepper({ current }: { current: number }) {
 }
 
 type OrderFlowProps = {
-  product: Product;
+  product: DisplayProduct;
   settings: DisplaySettings;
 };
 
@@ -163,10 +163,10 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
           <>
             <div className="grid grid-cols-1 items-center gap-[14px] min-[601px]:grid-cols-[minmax(180px,42%)_1fr] min-[601px]:gap-[26px]">
               <ProductImage
-                src={product.image}
-                alt={product.name}
+                picture={product.picture}
                 fallback={settings.fallbackImage}
                 priority
+                sizes="(max-width: 600px) calc(100vw - 30px), 380px"
                 className="h-[210px] w-full rounded-[11px] bg-[#e9dfd0] object-cover min-[601px]:h-[270px]"
               />
               <div>

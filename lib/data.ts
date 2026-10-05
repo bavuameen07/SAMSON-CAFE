@@ -3,18 +3,19 @@ import { cache } from "react";
 import { withAdminToken } from "./admin-session";
 import { config, displaySettings } from "./config";
 import { withProductDetails } from "./normalize";
+import { withPictures } from "./product-images";
 import { getOrders, getProducts, SheetsError } from "./sheets";
-import type { DisplaySettings, Order, Product } from "./types";
+import type { DisplayProduct, DisplaySettings, Order } from "./types";
 
 export type MenuData = {
-  products: Product[];
+  products: DisplayProduct[];
   settings: DisplaySettings;
   connected: boolean;
   error: string | null;
 };
 
 export type AdminData = {
-  products: Product[];
+  products: DisplayProduct[];
   orders: Order[];
   settings: DisplaySettings;
   connected: boolean;
@@ -36,7 +37,7 @@ export const loadMenu = cache(async (): Promise<MenuData> => {
   const settings = displaySettings();
   try {
     const products = (await getProducts()).filter((product) => product.enabled);
-    return { products, settings, connected: true, error: null };
+    return { products: withPictures(products), settings, connected: true, error: null };
   } catch (error) {
     const reason = notConfiguredMessage();
     return {
@@ -55,7 +56,8 @@ export const loadMenu = cache(async (): Promise<MenuData> => {
 export const loadAdminData = cache(async (): Promise<AdminData> => {
   const settings = displaySettings();
   try {
-    const [products, orders] = await Promise.all([getProducts(), withAdminToken(getOrders)]);
+    const [rawProducts, orders] = await Promise.all([getProducts(), withAdminToken(getOrders)]);
+    const products = withPictures(rawProducts);
     return {
       products,
       orders: withProductDetails(orders, products),

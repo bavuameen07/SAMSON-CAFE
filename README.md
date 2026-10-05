@@ -39,3 +39,28 @@ The provided Orders sheet has no columns for customer contact, delivery address,
 - `/admin`, `/admin/products`, `/admin/orders`, `/admin/stock`, `/admin/reports` — admin screens.
 
 Set the low-stock cutoff and currency once in `config.js`.
+
+## Product images
+
+Every menu item gets its own photograph, resolved from the product name. Nothing is hand-assigned and nothing is random:
+
+```
+product name -> dish + flavour modifiers -> signature -> prompt -> image URL
+```
+
+- `lib/product-image-prompts.ts` turns a name into a dish description, a stable signature (`vanilla-latte`), a photography prompt and the alt text. It covers the whole cafe menu — espresso through cheesecake — and falls back to describing the name itself, so a dish the table has never seen still gets a matching picture.
+- `lib/product-images.ts` resolves that plan to a URL in a fixed order: an image URL already in the Items sheet, then the generated photo in `public/menu`, then the image generator configured in `lib/config.ts`, then the cafe fallback photo. The outcome is a pure function of the product name, so a product's picture never changes between renders, requests or deploys, and nothing is generated while a page is rendering.
+- The generator request is seeded from the signature, so a product added to the Google Sheet with an empty image cell resolves to the same picture on every visit without any code change.
+- `components/product-image.tsx` renders local assets through `next/image` for responsive sources, modern formats, lazy loading and a reserved aspect ratio, and falls back to the cafe photo if an image fails to load, so a broken icon never appears.
+
+Regenerate or add the committed photos with:
+
+```
+npm run images             # every product currently in the sheet
+npm run images "Vanilla Latte"
+npm run images -- --force  # rebuild photos that already exist
+npm run images:fallback    # the cafe fallback photo
+npm run images:check       # no two product names share a picture
+```
+
+Add a `token` to `config.imageGenerator` in `lib/config.ts` if the generator needs an account. The browser never sends it — a token the client can read is not a secret — so an authenticated generator can only produce committed photos through this tool; with `public/menu` in place the storefront serves those and never calls the generator at request time.

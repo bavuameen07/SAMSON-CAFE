@@ -8,7 +8,7 @@ import { inputClasses, labelClasses, toolbarControlClasses, toolbarSearchClasses
 import { Modal } from "@/components/ui/modal";
 import { Toast, useToast } from "@/components/ui/toast";
 import { formatMoney } from "@/lib/format";
-import type { DisplaySettings, Product } from "@/lib/types";
+import type { DisplayProduct, DisplaySettings } from "@/lib/types";
 import { StockBadge } from "./badges";
 import { AdminCard, AdminHeading, EmptyTable } from "./section";
 
@@ -16,7 +16,7 @@ const CELL = "border-b border-[#eff0f2] px-[11px] py-3";
 const HEADINGS = ["Product", "Item ID", "Current stock", "Price", "Stock status", "Action"];
 
 type StockManagerProps = {
-  products: Product[];
+  products: DisplayProduct[];
   settings: DisplaySettings;
 };
 
@@ -110,9 +110,10 @@ export function StockManager({ products, settings }: StockManagerProps) {
                     <td className={CELL}>
                       <div className="flex items-center gap-[9px]">
                         <ProductImage
-                          src={product.image}
+                          picture={product.picture}
                           alt=""
                           fallback={settings.fallbackImage}
+                          sizes="40px"
                           className="h-[34px] w-[40px] rounded-[5px] bg-[#eee] object-cover"
                         />
                         <strong>{product.name}</strong>

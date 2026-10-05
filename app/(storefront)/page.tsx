@@ -43,7 +43,7 @@ export default async function MenuPage() {
               <p>There are no menu items available right now.</p>
             </div>
           ) : (
-            products.map((product) => {
+            products.map((product, index) => {
               const soldOut = product.stock < 1;
               return (
                 <article
@@ -51,9 +51,12 @@ export default async function MenuPage() {
                   className="min-w-0 overflow-hidden rounded-[15px] bg-white shadow-card transition duration-200 hover:-translate-y-[3px] hover:shadow-card-hover"
                 >
                   <ProductImage
-                    src={product.image}
-                    alt={product.name}
+                    picture={product.picture}
                     fallback={settings.fallbackImage}
+                    // The first row is above the fold, so load it eagerly as the
+                    // page's largest paint and leave the rest lazy.
+                    priority={index < 3}
+                    sizes="(max-width: 600px) calc(100vw - 32px), (max-width: 850px) calc(50vw - 43px), (max-width: 1050px) calc(33vw - 51px), 378px"
                     className="block h-[218px] w-full bg-[#e9dfd0] object-cover min-[601px]:h-[228px] min-[601px]:max-[1050px]:h-[190px]"
                   />
                   <div className="px-4 pt-4 pb-[17px] min-[601px]:px-[18px] min-[601px]:pt-[18px]">

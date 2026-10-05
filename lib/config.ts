@@ -13,6 +13,35 @@ export const config = {
   adminPassword: "admin1234",
   authSecret:
     "6df7a5e5a532fcc76fec3e3aab34701b643f8deb780d657282e2e915e3f02764",
+
+  /**
+   * Where a product with no picture in the sheet gets one from.
+   *
+   * `endpoint` must accept `{prompt}` plus the usual image-generator query
+   * parameters; `model` selects the image model. The prompt is derived from the
+   * product name (see lib/product-image-prompts.ts) and the request seed is
+   * derived from that prompt's dish signature, so the same product name always
+   * resolves to the same image. Set `enabled: false` to serve only the photos
+   * committed in `public/menu`.
+   */
+  imageGenerator: {
+    enabled: true,
+    endpoint: "https://image.pollinations.ai/prompt/{prompt}",
+    model: "flux",
+    /**
+     * Bearer token for the `npm run images` tool, for generator accounts that
+     * need one. The browser never sends it — anything the client can read is
+     * public — so a token-authenticated generator can only be used to produce
+     * the committed photos, not to resolve images at request time.
+     */
+    token: "",
+  },
+
+  /**
+   * Shown when a product has no picture at all. Self-hosted, so the site never
+   * depends on a third-party host for its fallback.
+   */
+  fallbackImage: "/menu/fallback.jpg",
 };
 
 export const isSheetsConfigured = config.googleScriptUrl.length > 0;
@@ -23,7 +52,6 @@ export function displaySettings(): DisplaySettings {
     currency: "₹",
     timezone: "Asia/Kolkata",
     lowStockThreshold: 10,
-    fallbackImage:
-      "https://images.unsplash.com/photo-1442512595331-e89e73853f31?auto=format&fit=crop&w=900&q=80",
+    fallbackImage: config.fallbackImage,
   };
 }

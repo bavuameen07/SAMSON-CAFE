@@ -1,5 +1,5 @@
 import { toBoolean, toNumber, toText } from "./coerce";
-import type { Order, OrderStatus, Product } from "./types";
+import type { DisplayProduct, Order, OrderStatus, Product } from "./types";
 
 type RawRow = Record<string, unknown> | unknown[];
 
@@ -68,15 +68,18 @@ export function normalizeOrder(raw: unknown): Order {
   };
 }
 
-/** Orders carry no product name or image, so both are resolved from the Items sheet. */
-export function withProductDetails(orders: Order[], products: Product[]): Order[] {
+/**
+ * Orders carry no product name or image, so both are resolved from the Items
+ * sheet, falling back to the picture resolved from the product name.
+ */
+export function withProductDetails(orders: Order[], products: DisplayProduct[]): Order[] {
   return orders.map((order) => {
     const product = products.find((candidate) => candidate.id === order.itemId);
     if (!product) return order;
     return {
       ...order,
       itemName: order.itemName || product.name || order.itemId,
-      image: order.image || product.image,
+      image: order.image || product.picture.url,
     };
   });
 }

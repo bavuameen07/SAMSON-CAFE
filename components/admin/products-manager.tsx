@@ -17,17 +17,17 @@ import {
 import { Modal } from "@/components/ui/modal";
 import { Toast, useToast } from "@/components/ui/toast";
 import { formatMoney } from "@/lib/format";
-import type { DisplaySettings, Product } from "@/lib/types";
+import type { DisplayProduct, DisplaySettings } from "@/lib/types";
 import { MenuBadge, StockBadge } from "./badges";
 import { AdminCard, AdminHeading, EmptyTable } from "./section";
 
-type Draft = { mode: "create" } | { mode: "edit"; product: Product };
+type Draft = { mode: "create" } | { mode: "edit"; product: DisplayProduct };
 
 const CELL = "border-b border-[#eff0f2] px-[11px] py-3";
 const HEADINGS = ["Product", "ID", "Stock", "Price", "Status", "Menu", "Action"];
 
 type ProductsManagerProps = {
-  products: Product[];
+  products: DisplayProduct[];
   settings: DisplaySettings;
 };
 
@@ -50,7 +50,7 @@ export function ProductsManager({ products, settings }: ProductsManagerProps) {
     });
   }, [products, query, stockFilter, threshold]);
 
-  function toggleEnabled(product: Product) {
+  function toggleEnabled(product: DisplayProduct) {
     startTransition(async () => {
       const result = await setProductEnabledAction(product.id, !product.enabled);
       showToast(
@@ -137,9 +137,10 @@ export function ProductsManager({ products, settings }: ProductsManagerProps) {
                     <td className={CELL}>
                       <div className="flex items-center gap-[9px]">
                         <ProductImage
-                          src={product.image}
+                          picture={product.picture}
                           alt=""
                           fallback={settings.fallbackImage}
+                          sizes="40px"
                           className="h-[34px] w-[40px] rounded-[5px] bg-[#eee] object-cover"
                         />
                         <strong>{product.name}</strong>
