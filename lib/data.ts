@@ -53,10 +53,19 @@ export const loadMenu = cache(async (): Promise<MenuData> => {
   }
 });
 
+/**
+ * Admin dashboard data. Both reads are uncached, so a page load or a TRY AGAIN
+ * always reflects the sheet as it stands. The dashboard is low-traffic and is
+ * where edits are verified, so freshness matters more here than on the
+ * storefront, where the shared 60s cache absorbs the traffic.
+ */
 export const loadAdminData = cache(async (): Promise<AdminData> => {
   const settings = displaySettings();
   try {
-    const [rawProducts, orders] = await Promise.all([getProducts(), withAdminToken(getOrders)]);
+    const [rawProducts, orders] = await Promise.all([
+      getProducts({ fresh: true }),
+      withAdminToken(getOrders),
+    ]);
     const products = withPictures(rawProducts);
     return {
       products,

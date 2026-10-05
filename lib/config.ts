@@ -6,9 +6,14 @@ import type { DisplaySettings } from "./types";
  * with no env setup. These values stay server-side: this module imports
  * "server-only" and is never pulled into a client bundle, so the browser never
  * sees the script URL or the admin credentials.
+ *
+ * The one exception is the web app URL. Redeploying Apps Script produces a new
+ * URL, so `GOOGLE_SCRIPT_URL` lets a hosting platform supply it without a source
+ * edit; the hard-coded value below stays the default.
  */
 export const config = {
   googleScriptUrl:
+    process.env.GOOGLE_SCRIPT_URL ??
     "https://script.google.com/macros/s/AKfycbwR1n3HwHjVFlkCEd90RT03lNGGtEBxdgUKJ4pv0nG8uFYqk3ySNCHAXReni3YvZdDvHA/exec",
   adminPassword: "admin1234",
   authSecret:

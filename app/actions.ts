@@ -12,7 +12,11 @@ import {
 } from "@/lib/admin-session";
 import { resolveProductImage } from "@/lib/product-images";
 import {
+  checkDeployment,
   createProduct,
+  describeDeployment,
+  type DeploymentReport,
+  getOrders,
   placeOrder,
   SheetsError,
   SHEETS_TAGS,
@@ -66,6 +70,26 @@ export async function refreshViewsAction(): Promise<void> {
   refreshAdminViews();
 }
 
+/**
+ * Re-probes the configured Apps Script web app and reports what it serves.
+ *
+ * Deliberately unauthenticated: it only reads the deployment's own version and
+ * action list, which is not privileged information, and it returns no sheet data
+ * and no token. That is what lets the error page's TRY AGAIN test the real
+ * connection — the failure being retried usually lives outside this app, and a
+ * stale deployment only becomes current when somebody redeploys it.
+ */
+export async function diagnoseSheetsAction(): Promise<ActionResult<DeploymentReport>> {
+  const report = await checkDeployment();
+  if (report.reachable && report.missing.length === 0) return { ok: true, data: report };
+  return {
+    ok: false,
+    error:
+      describeDeployment(report) ||
+      "The Apps Script web app did not answer the connection check.",
+  };
+}
+
 export async function placeOrderAction(
   itemId: string,
   quantity: number,
@@ -95,6 +119,18 @@ export async function adminLoginAction(
   if (!passwordMatches(String(formData.get("password") ?? ""))) {
     return { error: "Incorrect admin password." };
   }
+
+  // Confirm the deployment can actually serve the dashboard before handing out a
+  // session. A stale web app would otherwise accept the password, set the cookie
+  // and then show "Google Sheets unavailable" on the next screen, which reads as
+  // a broken app rather than an unredeployed script. This also warms the admin
+  // token so the first dashboard load does not have to fetch one.
+  try {
+    await withAdminToken((token) => getOrders(token));
+  } catch (error) {
+    return failure(error);
+  }
+
   await createAdminSession();
   redirect("/admin");
 }

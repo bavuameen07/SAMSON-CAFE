@@ -252,6 +252,30 @@ function postJson<T>(
   ).then((response) => unwrap<T>(response, emptySuccess));
 }
 
+/**
+ * Admin calls travel as a POST JSON body rather than a query string.
+ *
+ * They carry the admin session token and the password-derived login proof, and a
+ * URL reaches Apps Script execution logs, browser history and proxy logs, so
+ * those arguments must not be in one. Code.gs accepts these actions on either
+ * verb; the body is simply the only form that keeps the token out of a URL, and
+ * it is never cached, so every admin read sees the sheet as it is right now —
+ * which is what makes TRY AGAIN meaningful.
+ */
+function postAdmin<T>(action: string, body: Params = {}): Promise<T> {
+  return send(
+    buildUrl(action),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, ...body }),
+      cache: "no-store",
+    },
+    action,
+    LIVE_TIMEOUT_MS,
+  ).then((response) => unwrap<T>(response));
+}
+
 function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -273,11 +297,17 @@ function toProducts(rows: unknown): Product[] {
  * Public menu data. Cached briefly so the storefront does not hammer Apps
  * Script. Falls back to the legacy action names when the deployment predates
  * `getProducts`, so the storefront keeps working before a redeploy.
+ *
+ * `fresh` skips the cache for the admin dashboard, which has to reflect an
+ * edit the moment it is saved rather than up to a minute later.
  */
-export async function getProducts(): Promise<Product[]> {
+export async function getProducts({ fresh = false }: { fresh?: boolean } = {}): Promise<Product[]> {
   for (const action of PRODUCT_ACTIONS) {
     try {
-      return toProducts(await cached<unknown>(action, {}, 60, [SHEETS_TAGS.products]));
+      const rows = fresh
+        ? await live<unknown>(action)
+        : await cached<unknown>(action, {}, 60, [SHEETS_TAGS.products]);
+      return toProducts(rows);
     } catch (error) {
       if (!(error instanceof UnknownActionError)) throw error;
     }
@@ -305,6 +335,100 @@ export async function getDeploymentInfo(): Promise<DeploymentInfo> {
       ? info.actions.filter((entry): entry is string => typeof entry === "string")
       : [],
   };
+}
+
+/** The actions the admin dashboard needs. A deployment missing any is stale. */
+export const ADMIN_ACTIONS = [
+  "version",
+  "adminChallenge",
+  "adminLogin",
+  "getOrders",
+  "createProduct",
+  "updateProduct",
+  "updateStock",
+  "updatePayment",
+] as const;
+
+export type DeploymentReport = {
+  /** Whether the web app answered at all, as opposed to answering wrongly. */
+  reachable: boolean;
+  build: string;
+  /** Actions the deployment says it serves. Empty when it could not be asked. */
+  actions: string[];
+  /** Admin actions it does not serve, which is why the dashboard fails. */
+  missing: string[];
+  /** Set when the web app could not be reached at all. */
+  detail: string | null;
+};
+
+/**
+ * Reports what the configured web app is actually serving, without throwing.
+ *
+ * A pre-`version` deployment answers the probe with the same banner it sends for
+ * every unknown action, and that banner carries the deployment's own action
+ * list, so a stale build can still be described precisely. This is what turns
+ * "something went wrong" into a diagnosis the operator can act on.
+ */
+export async function checkDeployment(): Promise<DeploymentReport> {
+  try {
+    const info = await getDeploymentInfo();
+    return {
+      reachable: true,
+      build: info.build,
+      actions: info.actions,
+      missing: ADMIN_ACTIONS.filter((action) => !info.actions.includes(action)),
+      detail: null,
+    };
+  } catch (error) {
+    if (error instanceof UnknownActionError) {
+      return {
+        reachable: true,
+        build: "unknown",
+        actions: error.actions,
+        missing: ADMIN_ACTIONS.filter((action) => !error.actions.includes(action)),
+        detail: null,
+      };
+    }
+    return {
+      reachable: false,
+      build: "",
+      actions: [],
+      missing: [...ADMIN_ACTIONS],
+      detail:
+        error instanceof SheetsError
+          ? error.message
+          : "The Apps Script web app could not be reached.",
+    };
+  }
+}
+
+/** Plain-language summary of a stale deployment, shared by every admin page. */
+export function describeDeployment(report: DeploymentReport): string {
+  if (!report.reachable) {
+    return `The Apps Script web app in lib/config.ts could not be reached. ${report.detail ?? ""}`.trim();
+  }
+  if (report.missing.length === 0) return "";
+  const served = report.actions.length > 0 ? report.actions.join(", ") : "nothing";
+  return `The Apps Script web app in lib/config.ts is an older build, so it cannot serve the admin dashboard. It reports build "${report.build}" and serves: ${served}. It is missing: ${report.missing.join(", ")}. Redeploy apps-script/Code.gs as a new web app version to fix this — see the "Deploying the web app" section of README.md.`;
+}
+
+/**
+ * Explains a missing admin action once, in one place, so every admin surface
+ * tells the operator the same thing instead of guessing at the cause.
+ */
+async function adminUnavailable(error: unknown): Promise<SheetsError> {
+  if (!(error instanceof UnknownActionError)) {
+    return error instanceof SheetsError
+      ? error
+      : new SheetsError("The admin API request failed.");
+  }
+  const report = await checkDeployment();
+  return new SheetsError(
+    describeDeployment(report) ||
+      `The Apps Script deployment does not implement this admin action. It serves: ${
+        report.actions.join(", ") || "nothing"
+      }.`,
+  );
 }
 
 /**
@@ -359,40 +483,44 @@ export async function placeOrder(
 
 /**
  * Mirrors adminLogin_ in Code.gs, where proof = sha256(nonce + sha256(password)).
- * The password stays on the server, so the browser never performs this step.
+ * The password stays on the server, so the browser never performs this step, and
+ * the proof travels in a POST body so it is not left in a URL.
  *
- * Admin actions only exist in the current Code.gs, so this has no legacy
- * fallback and reports the redeploy requirement directly.
+ * The deployment is checked before any admin call is attempted. A stale build
+ * cannot serve these actions at all, and it fails in different ways depending on
+ * the verb: its GET handler answers with the list of actions it does have, while
+ * its POST handler either rejects the action outright or hangs until it times
+ * out. Asking first turns all three into one accurate answer, quickly, instead of
+ * surfacing whichever symptom happened to arrive first.
  */
 export async function requestAdminToken(password: string): Promise<string> {
+  const report = await checkDeployment();
+  const stale = describeDeployment(report);
+  if (stale) throw new SheetsError(stale);
+
   let challenge: { nonce?: unknown };
   try {
-    challenge = await live<{ nonce?: unknown }>("adminChallenge", {});
+    challenge = await postAdmin<{ nonce?: unknown }>("adminChallenge");
   } catch (error) {
-    if (error instanceof UnknownActionError) {
-      throw new SheetsError(
-        "This Apps Script deployment has no admin sign-in (it predates apps-script/Code.gs). Redeploy the web app to enable the admin dashboard.",
-      );
-    }
-    throw error;
+    throw await adminUnavailable(error);
   }
 
   const nonce = typeof challenge.nonce === "string" ? challenge.nonce : "";
   if (!nonce) throw new SheetsError("Apps Script did not issue a login nonce.");
 
   const proof = sha256Hex(nonce + sha256Hex(password));
-  const result = await live<{ token?: unknown }>("adminLogin", { nonce, proof });
+  const result = await postAdmin<{ token?: unknown }>("adminLogin", { nonce, proof });
   const token = typeof result.token === "string" ? result.token : "";
   if (!token) throw new SheetsError("Apps Script did not issue an admin token.");
   return token;
 }
 
 export async function getOrders(adminToken: string): Promise<Order[]> {
-  return toRows(await live<unknown>("getOrders", { adminToken })).map(normalizeOrder);
+  return toRows(await postAdmin<unknown>("getOrders", { adminToken })).map(normalizeOrder);
 }
 
 export async function createProduct(adminToken: string, draft: ProductDraft): Promise<Product> {
-  return normalizeProduct(await live<unknown>("createProduct", { adminToken, ...draft }));
+  return normalizeProduct(await postAdmin<unknown>("createProduct", { adminToken, ...draft }));
 }
 
 export async function updateProduct(
@@ -400,11 +528,11 @@ export async function updateProduct(
   id: string,
   patch: Partial<ProductDraft> & { enabled?: boolean },
 ): Promise<Product> {
-  return normalizeProduct(await live<unknown>("updateProduct", { adminToken, id, ...patch }));
+  return normalizeProduct(await postAdmin<unknown>("updateProduct", { adminToken, id, ...patch }));
 }
 
 export async function updateStock(adminToken: string, id: string, stock: number): Promise<Product> {
-  return normalizeProduct(await live<unknown>("updateStock", { adminToken, id, stock }));
+  return normalizeProduct(await postAdmin<unknown>("updateStock", { adminToken, id, stock }));
 }
 
 /** updatePayment_ reads `status`, not `paymentStatus`, and takes the order id. */
@@ -413,5 +541,5 @@ export async function updatePayment(
   orderId: string,
   status: OrderStatus,
 ): Promise<void> {
-  await live<unknown>("updatePayment", { adminToken, orderId, status });
+  await postAdmin<unknown>("updatePayment", { adminToken, orderId, status });
 }

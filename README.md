@@ -64,3 +64,41 @@ npm run images:check       # no two product names share a picture
 ```
 
 Add a `token` to `config.imageGenerator` in `lib/config.ts` if the generator needs an account. The browser never sends it — a token the client can read is not a secret — so an authenticated generator can only produce committed photos through this tool; with `public/menu` in place the storefront serves those and never calls the generator at request time.
+
+## Deploying the Apps Script web app
+
+The menu, the admin dashboard, orders, stock and reports all talk to one Google Apps Script web app. Editing `apps-script/Code.gs` here does **not** change the running deployment: Apps Script keeps serving whichever version was last deployed, so a change only takes effect once it is deployed as a new version.
+
+A deployment can serve the storefront and still be unable to serve the dashboard. Check what the configured URL actually supports by asking it:
+
+```
+https://<your-deployment-url>/exec?action=version
+```
+
+- Current build: `{ "ok": true, "data": { "build": "2026-10-05-admin-integration", "actions": [...] } }`
+- Older build: `{ "success": true, "message": "Samson Cafe API is working", "actions": ["getPublicItems", "getItems", "getOrders", "placeOrder", "updatePayment"] }`
+
+That second shape is the whole problem: it has no `adminChallenge`, so no admin session can ever be created, and the dashboard reports Google Sheets unavailable. The storefront keeps working against it, which is why the fault can look isolated to `/admin`. The admin pages run the same check through TRY AGAIN, which re-probes the live web app and reports the build and the actions it is missing.
+
+### Redeploy
+
+1. Open <https://script.google.com> and open the Samson Cafe project — the one behind `googleScriptUrl` in `lib/config.ts`.
+2. Replace everything in its `Code.gs` with the local `apps-script/Code.gs`, then save.
+3. **Deploy > New deployment**, and choose the type **Web app**.
+4. Set **Execute as** to **Me** and **Who has access** to **Anyone**. "Anyone" is required, because customers place orders without a Google account. Authorise the app if Google asks.
+5. Copy the new **Web app URL** into `config.googleScriptUrl` in `lib/config.ts`. It must end in `/exec`, which is the endpoint this site calls.
+6. Open `…/exec?action=version` and confirm it names the current build. Only then reload `/admin`.
+
+Redeploying adds a deployment and leaves older versions in place, so spreadsheet data is untouched: every version reads and writes the same `Items` and `Orders` sheets and never renames, reorders or adds columns. If the new URL differs, the old deployment can be deleted afterwards from **Deploy > Manage deployments**.
+
+### Script properties
+
+Set in the Apps Script editor under **Project Settings > Script Properties**:
+
+| Property | Purpose | Default |
+| --- | --- | --- |
+| `SPREADSHEET_ID` | Spreadsheet to serve. | The cafe spreadsheet |
+| `SAMSON_ADMIN_PASSWORD` | Admin dashboard password. | `admin1234` — change this |
+| `SAMSON_DISABLED_ITEMS` | Menu on/off state, kept out of the sheet. | Internal, not hand-edited |
+
+`config.adminPassword` in `lib/config.ts` must match `SAMSON_ADMIN_PASSWORD`, since the server proves possession of it to the script at sign-in.
