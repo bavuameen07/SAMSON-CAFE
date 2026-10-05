@@ -29,16 +29,27 @@ function orderStatus(value: unknown): OrderStatus {
   return toText(value).toLowerCase() === "paid" ? "Paid" : "Pending";
 }
 
+/**
+ * Item images are arbitrary URLs held in the sheet. Older Apps Script builds
+ * returned the literal placeholder "CellImage" instead of a URL, so anything
+ * that is not http(s) is treated as absent and the layout's fallback is used.
+ */
+function toImage(value: unknown): string {
+  const text = toText(value);
+  return /^https?:\/\/\S+$/i.test(text) ? text : "";
+}
+
 /** Items columns: id, name, image, stock, price. Enable state lives in script properties. */
 export function normalizeProduct(raw: unknown): Product {
   const row = asRow(raw);
   return {
     id: toText(field(row, ["id", "ID", 0])),
     name: toText(field(row, ["name", "NAME", 1])),
-    image: toText(field(row, ["image", "IMAGE", 2])),
+    image: toImage(field(row, ["image", "IMAGE", 2])),
     stock: toNumber(field(row, ["stock", "STOCK", 3])),
     price: toNumber(field(row, ["price", "PRICE", 4])),
-    enabled: toBoolean(field(row, ["enabled"]), true),
+    // `available` is the flag name used by pre-admin-dashboard deployments.
+    enabled: toBoolean(field(row, ["enabled", "available"]), true),
   };
 }
 

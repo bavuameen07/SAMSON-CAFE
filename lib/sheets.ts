@@ -11,6 +11,26 @@ export class SheetsError extends Error {
   }
 }
 
+/**
+ * The deployment answered, but it does not implement the action we asked for.
+ * A pre-admin build of Code.gs replies with a `{ success, actions }` banner for
+ * any unrecognised action, so this is the signal to try an older action name
+ * rather than a genuine failure.
+ */
+export class UnknownActionError extends SheetsError {
+  readonly actions: string[];
+
+  constructor(actions: string[] = []) {
+    super(
+      actions.length > 0
+        ? `The deployed web app does not implement this action. It supports: ${actions.join(", ")}.`
+        : "The deployed web app does not implement this action.",
+    );
+    this.name = "UnknownActionError";
+    this.actions = actions;
+  }
+}
+
 export const SHEETS_TAGS = {
   products: "products",
   orders: "orders",
@@ -51,6 +71,12 @@ function toRows(value: unknown): unknown[] {
 /**
  * Apps Script always answers 200 and signals failure in the body, so the `ok`
  * flag is the only reliable error signal.
+ *
+ * Two envelope generations exist in the wild. The current Code.gs answers
+ * `{ ok, data }`. Deployments from before the admin dashboard answer
+ * `{ success, items }` / `{ success, orders }`, and reply with a
+ * `{ success, message, actions }` banner for any action they do not know.
+ * Both are accepted so the storefront survives a redeploy gap.
  */
 async function unwrap<T>(response: Response): Promise<T> {
   if (!response.ok) {
@@ -73,9 +99,13 @@ async function unwrap<T>(response: Response): Promise<T> {
   const envelope = payload as {
     ok?: unknown;
     data?: unknown;
+    items?: unknown;
+    orders?: unknown;
     message?: unknown;
     success?: unknown;
+    actions?: unknown;
   };
+
   if (envelope.ok === false) {
     throw new SheetsError(
       typeof envelope.message === "string" && envelope.message
@@ -86,11 +116,28 @@ async function unwrap<T>(response: Response): Promise<T> {
   if (envelope.ok === true && envelope.data !== undefined) {
     return envelope.data as T;
   }
+
+  // Legacy envelope. A bare `{ success: true, actions: [...] }` carries no
+  // rows, which means the action itself is unrecognised by this deployment.
   if (envelope.success === true) {
-    throw new SheetsError(
-      "The deployed web app is an older build of the script and does not match apps-script/Code.gs. Redeploy the Apps Script web app with the current Code.gs.",
+    if (Array.isArray(envelope.items)) return envelope.items as T;
+    if (Array.isArray(envelope.orders)) return envelope.orders as T;
+    if (envelope.data !== undefined) return envelope.data as T;
+    throw new UnknownActionError(
+      Array.isArray(envelope.actions)
+        ? envelope.actions.filter((entry): entry is string => typeof entry === "string")
+        : [],
     );
   }
+
+  if (envelope.success === false) {
+    throw new SheetsError(
+      typeof envelope.message === "string" && envelope.message
+        ? envelope.message
+        : "The Apps Script request failed.",
+    );
+  }
+
   throw new SheetsError(
     "Google Apps Script returned an unexpected response shape. Redeploy the web app.",
   );
@@ -110,12 +157,35 @@ function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-/** Public menu data. Cached briefly so the storefront does not hammer Apps Script. */
-export async function getProducts(): Promise<Product[]> {
-  const rows = await cached<unknown>("getProducts", {}, 60, [SHEETS_TAGS.products]);
+/**
+ * Product action names, newest first. `getProducts` is the current Code.gs
+ * action; `getPublicItems` and `getItems` are the pre-admin-dashboard names
+ * still served by older deployments.
+ */
+const PRODUCT_ACTIONS = ["getProducts", "getPublicItems", "getItems"] as const;
+
+function toProducts(rows: unknown): Product[] {
   return toRows(rows)
     .map(normalizeProduct)
     .filter((product) => product.id !== "");
+}
+
+/**
+ * Public menu data. Cached briefly so the storefront does not hammer Apps
+ * Script. Falls back to the legacy action names when the deployment predates
+ * `getProducts`, so the storefront keeps working before a redeploy.
+ */
+export async function getProducts(): Promise<Product[]> {
+  for (const action of PRODUCT_ACTIONS) {
+    try {
+      return toProducts(await cached<unknown>(action, {}, 60, [SHEETS_TAGS.products]));
+    } catch (error) {
+      if (!(error instanceof UnknownActionError)) throw error;
+    }
+  }
+  throw new SheetsError(
+    `The deployed web app exposes none of the product actions (${PRODUCT_ACTIONS.join(", ")}). Redeploy apps-script/Code.gs as a new web app version.`,
+  );
 }
 
 /** Stock is revalidated and decremented inside Apps Script under a script lock. */
@@ -126,9 +196,23 @@ export async function placeOrder(itemId: string, quantity: number): Promise<Orde
 /**
  * Mirrors adminLogin_ in Code.gs, where proof = sha256(nonce + sha256(password)).
  * The password stays on the server, so the browser never performs this step.
+ *
+ * Admin actions only exist in the current Code.gs, so this has no legacy
+ * fallback and reports the redeploy requirement directly.
  */
 export async function requestAdminToken(password: string): Promise<string> {
-  const challenge = await live<{ nonce?: unknown }>("adminChallenge", {});
+  let challenge: { nonce?: unknown };
+  try {
+    challenge = await live<{ nonce?: unknown }>("adminChallenge", {});
+  } catch (error) {
+    if (error instanceof UnknownActionError) {
+      throw new SheetsError(
+        "This Apps Script deployment has no admin sign-in (it predates apps-script/Code.gs). Redeploy the web app to enable the admin dashboard.",
+      );
+    }
+    throw error;
+  }
+
   const nonce = typeof challenge.nonce === "string" ? challenge.nonce : "";
   if (!nonce) throw new SheetsError("Apps Script did not issue a login nonce.");
 

@@ -3,7 +3,9 @@
  * Deploy as a Web App, execute as you, accessible to anyone.
  */
 const ITEMS_SHEET='Items', ORDERS_SHEET='Orders', TOKEN_TTL_SECONDS=21600;
-function doGet(e){const q=e&&e.parameter||{};let p={};try{if(q.payload)p=JSON.parse(q.payload);Object.keys(q).forEach(k=>{if(!['action','callback','payload'].includes(k))p[k]=q[k];});return respond_(e,{ok:true,data:dispatch_(String(q.action||''),p)});}catch(err){return respond_(e,{ok:false,message:safeMessage_(err)});}}
+function doGet(e){return run_(e,e&&e.parameter||{},null);}
+function doPost(e){const b=e&&e.postBody,json=b&&String(b.type||'').indexOf('application/json')>=0?b.contents:null;return run_(e,e&&e.parameter||{},json);}
+function run_(e,q,json){let p={};try{if(json){p=JSON.parse(json);if(!q.action&&p.action)q.action=p.action;}else if(q.payload){p=JSON.parse(q.payload);}Object.keys(q).forEach(k=>{if(!['action','callback','payload'].includes(k))p[k]=q[k];});return respond_(e,{ok:true,data:dispatch_(String(q.action||''),p)});}catch(err){return respond_(e,{ok:false,message:safeMessage_(err)});}}
 function dispatch_(a,p){switch(a){case'getProducts':return getProducts_();case'adminChallenge':return adminChallenge_();case'adminLogin':return adminLogin_(p.nonce,p.proof);case'getOrders':requireAdmin_(p.adminToken);return getOrders_();case'placeOrder':return createOrder_(p);case'createProduct':requireAdmin_(p.adminToken);return createProduct_(p);case'updateProduct':requireAdmin_(p.adminToken);return updateProduct_(p);case'updateStock':requireAdmin_(p.adminToken);return updateStock_(p);case'updatePayment':requireAdmin_(p.adminToken);return updatePayment_(p);default:throw Error('Unknown API action.');}}
 function spreadsheet_(){const id=PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')||'1vDEiG_-KM4rfdb9cb6UPzE86BieHmtHKhLivOLVX61w';return SpreadsheetApp.openById(id);}
 function sheet_(n,min){const s=spreadsheet_().getSheetByName(n);if(!s)throw Error('Required sheet is missing: '+n);if(s.getMaxColumns()<min)throw Error('Sheet structure does not match: '+n);return s;}
