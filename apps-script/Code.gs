@@ -3,8 +3,12 @@
  * Deploy as a Web App, execute as you, accessible to anyone.
  */
 const ITEMS_SHEET='Items', ORDERS_SHEET='Orders', TOKEN_TTL_SECONDS=21600;
+/** An order write has to answer well inside the storefront's 15s timeout, so the
+ *  script lock is held only briefly and a busy lock fails fast with a retryable
+ *  error instead of blocking past the client's deadline. */
+const LOCK_TIMEOUT_MS=5000,IDEMPOTENCY_TTL_SECONDS=900;
 /** Bump BUILD_ID whenever Code.gs changes, so clients can detect a stale deployment via the `version` action. */
-const BUILD_ID='2026-10-05-menu-orders-admin';
+const BUILD_ID='2026-10-05-placeorder-fastlock';
 const ACTIONS_=['version','getProducts','adminChallenge','adminLogin','getOrders','placeOrder','createProduct','updateProduct','updateStock','updatePayment'];
 function doGet(e){return run_(e,e&&e.parameter||{},null);}
 function doPost(e){const b=e&&e.postBody,json=b&&String(b.type||'').indexOf('application/json')>=0?b.contents:null;return run_(e,e&&e.parameter||{},json);}
@@ -12,14 +16,60 @@ function run_(e,q,json){let p={};try{if(json){p=JSON.parse(json);if(!q.action&&p
 function dispatch_(a,p){switch(a){case'version':return version_();case'getProducts':return getProducts_();case'adminChallenge':return adminChallenge_();case'adminLogin':return adminLogin_(p.nonce,p.proof);case'getOrders':requireAdmin_(p.adminToken);return getOrders_();case'placeOrder':return createOrder_(p);case'createProduct':requireAdmin_(p.adminToken);return createProduct_(p);case'updateProduct':requireAdmin_(p.adminToken);return updateProduct_(p);case'updateStock':requireAdmin_(p.adminToken);return updateStock_(p);case'updatePayment':requireAdmin_(p.adminToken);return updatePayment_(p);default:throw Error('Unknown API action "'+a+'". Supported actions: '+ACTIONS_.join(', ')+'.');}}
 function version_(){return{build:BUILD_ID,actions:ACTIONS_.slice(),itemsSheet:ITEMS_SHEET,ordersSheet:ORDERS_SHEET};}
 function spreadsheet_(){const id=PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')||'1vDEiG_-KM4rfdb9cb6UPzE86BieHmtHKhLivOLVX61w';return SpreadsheetApp.openById(id);}
-function sheet_(n,min){const s=spreadsheet_().getSheetByName(n);if(!s)throw Error('Required sheet is missing: '+n);if(s.getMaxColumns()<min)throw Error('Sheet structure does not match: '+n);return s;}
+function sheetIn_(ss,n,min){const s=ss.getSheetByName(n);if(!s)throw Error('Required sheet is missing: '+n);if(s.getMaxColumns()<min)throw Error('Sheet structure does not match: '+n);return s;}
+function sheet_(n,min){return sheetIn_(spreadsheet_(),n,min);}
+/** Structured logging for the order path. Never logs credentials or tokens. */
+function log_(m){try{console.log(m);}catch(err){}}
 function getProducts_(){const s=sheet_(ITEMS_SHEET,5),n=s.getLastRow();if(n<2)return[];const d=disabledIds_();return s.getRange(2,1,n-1,5).getValues().filter(r=>r[0]!=='').map(r=>({id:String(r[0]),name:String(r[1]),image:String(r[2]||''),stock:Number(r[3])||0,price:Number(r[4])||0,enabled:!d[String(r[0])] }));}
 function getOrders_(){const s=sheet_(ORDERS_SHEET,6),n=s.getLastRow();if(n<2)return[];return s.getRange(2,1,n-1,6).getValues().filter(r=>r[0]!=='').map(r=>({id:String(r[0]),itemId:String(r[1]),quantity:Number(r[2])||0,total:Number(r[3])||0,date:r[4] instanceof Date?r[4].toISOString():String(r[4]),status:String(r[5]||'Pending')})).reverse();}
-function createOrder_(p){const id=String(p.itemId||'').trim(),qty=Number(p.quantity);if(!id||!Number.isInteger(qty)||qty<1)throw Error('Invalid order quantity.');const lock=LockService.getScriptLock();lock.waitLock(20000);try{const items=sheet_(ITEMS_SHEET,5),orders=sheet_(ORDERS_SHEET,6),rows=items.getLastRow()<2?[]:items.getRange(2,1,items.getLastRow()-1,5).getValues(),i=rows.findIndex(r=>String(r[0])===id);if(i<0||disabledIds_()[id])throw Error('This product is unavailable.');const stock=Number(rows[i][3])||0,price=Number(rows[i][4])||0;if(stock<qty)throw Error('There is not enough stock for this order.');if(price<=0)throw Error('This product price is not valid.');const orderId=nextOrderId_(orders),now=new Date(),total=price*qty,row=Math.max(orders.getLastRow()+1,2);orders.getRange(row,1,1,6).setValues([[orderId,id,qty,total,now,'Pending']]);try{items.getRange(i+2,4).setValue(stock-qty);SpreadsheetApp.flush();}catch(err){orders.deleteRow(row);throw err;}return{id:orderId,itemId:id,quantity:qty,total:total,date:now.toISOString(),status:'Pending'};}finally{lock.releaseLock();}}
+/** Reads one existing order back, so a repeated requestId returns it unchanged. */
+function findOrder_(orderId){const s=sheet_(ORDERS_SHEET,6),n=s.getLastRow();if(n<2)return null;const r=s.getRange(2,1,n-1,6).getValues().find(x=>String(x[0])===orderId);if(!r)return null;return{id:String(r[0]),itemId:String(r[1]),quantity:Number(r[2])||0,total:Number(r[3])||0,date:r[4]instanceof Date?r[4].toISOString():String(r[4]),status:String(r[5]||'Pending')};}
+/**
+ * Creates an order.
+ *
+ * The spreadsheet is opened once per request and both lookups are batched reads,
+ * so the happy path is one open, two reads, two writes and a single flush. The
+ * lock is taken with tryLock so a contended request fails fast with a retryable
+ * message instead of outlasting the storefront's timeout, and it is always
+ * released in `finally`.
+ *
+ * A caller-supplied `requestId` makes the call idempotent: a repeat returns the
+ * order already written instead of creating a second one, which matters because
+ * a slow write can land after the client has given up.
+ */
+function createOrder_(p){const t0=Date.now(),id=String(p.itemId||'').trim(),qty=Number(p.quantity),req=String(p.requestId||'').trim();
+log_('placeOrder START item='+id+' qty='+qty+(req?' req='+req:''));
+if(!id)throw Error('Item ID is required.');
+if(!Number.isInteger(qty)||qty<1)throw Error('Invalid order quantity.');
+const cache=CacheService.getScriptCache();
+if(req){const prior=cache.get('order:'+req);if(prior){const existing=findOrder_(prior);if(existing){log_('placeOrder DUPLICATE suppressed -> '+existing.id+' in '+(Date.now()-t0)+'ms');return existing;}}}
+const lock=LockService.getScriptLock();
+if(!lock.tryLock(LOCK_TIMEOUT_MS)){log_('placeOrder BUSY lock not acquired after '+LOCK_TIMEOUT_MS+'ms');throw Error('Another order is being placed right now. Please try again in a moment.');}
+try{
+const ss=spreadsheet_(),items=sheetIn_(ss,ITEMS_SHEET,5),orders=sheetIn_(ss,ORDERS_SHEET,6);
+const rows=items.getLastRow()<2?[]:items.getRange(2,1,items.getLastRow()-1,5).getValues();
+const i=rows.findIndex(r=>String(r[0])===id);
+log_('item lookup complete in '+(Date.now()-t0)+'ms');
+if(i<0||disabledIds_()[id])throw Error('This product is unavailable.');
+const stock=Number(rows[i][3])||0,price=Number(rows[i][4])||0;
+if(price<=0)throw Error('This product price is not valid.');
+if(stock<qty)throw Error('There is not enough stock for this order.');
+const total=price*qty,claimed=Number(p.totalAmount);
+if(Number.isFinite(claimed)&&claimed>0&&claimed!==total)throw Error('Order total does not match the current price.');
+log_('stock validation complete in '+(Date.now()-t0)+'ms');
+const orderId=nextOrderId_(orders),now=new Date(),row=Math.max(orders.getLastRow()+1,2);
+orders.getRange(row,1,1,6).setValues([[orderId,id,qty,total,now,'Pending']]);
+log_('order write complete '+orderId+' in '+(Date.now()-t0)+'ms');
+try{items.getRange(i+2,4).setValue(stock-qty);SpreadsheetApp.flush();}catch(err){orders.deleteRow(row);SpreadsheetApp.flush();log_('placeOrder FAILED stock write, order row rolled back');throw err;}
+if(req)cache.put('order:'+req,orderId,IDEMPOTENCY_TTL_SECONDS);
+log_('stock update complete in '+(Date.now()-t0)+'ms');
+log_('placeOrder SUCCESS '+orderId+' in '+(Date.now()-t0)+'ms');
+return{id:orderId,itemId:id,quantity:qty,total:total,date:now.toISOString(),status:'Pending'};
+}finally{lock.releaseLock();}}
 function nextOrderId_(s){const n=s.getLastRow(),ids=n<2?[]:s.getRange(2,1,n-1,1).getValues().map(r=>String(r[0]||'')),max=ids.reduce((m,id)=>{const x=id.match(/^ORD(\d+)$/i);return x?Math.max(m,Number(x[1])):m;},0);return'ORD'+String(max+1).padStart(3,'0');}
 function nextItemId_(rows){let m=rows.reduce((v,r)=>{const x=String(r[0]||'').match(/^C(\d+)$/i);return x?Math.max(v,Number(x[1])):v;},0),id;do{id='C'+String(++m).padStart(3,'0');}while(rows.some(r=>String(r[0])===id));return id;}
-function createProduct_(p){const name=String(p.name||'').trim(),image=String(p.image||'').trim(),stock=Number(p.stock),price=Number(p.price);if(!name||!Number.isInteger(stock)||stock<0||!Number.isFinite(price)||price<=0)throw Error('Product details are invalid.');const lock=LockService.getScriptLock();lock.waitLock(20000);try{const s=sheet_(ITEMS_SHEET,5),n=s.getLastRow(),rows=n<2?[]:s.getRange(2,1,n-1,5).getValues(),id=nextItemId_(rows);s.getRange(Math.max(n+1,2),1,1,5).setValues([[id,name,image,stock,price]]);return{id:id,name:name,image:image,stock:stock,price:price,enabled:true};}finally{lock.releaseLock();}}
-function updateProduct_(p){const id=String(p.id||'').trim();if(!id)throw Error('Product ID is required.');const lock=LockService.getScriptLock();lock.waitLock(20000);try{const s=sheet_(ITEMS_SHEET,5),n=s.getLastRow();if(n<2)throw Error('Product not found.');const rows=s.getRange(2,1,n-1,5).getValues(),i=rows.findIndex(r=>String(r[0])===id);if(i<0)throw Error('Product not found.');const r=rows[i];if(p.name!==undefined){const v=String(p.name).trim();if(!v)throw Error('Product name is required.');r[1]=v;}if(p.image!==undefined)r[2]=String(p.image).trim();if(p.stock!==undefined){const v=Number(p.stock);if(!Number.isInteger(v)||v<0)throw Error('Stock must be zero or more.');r[3]=v;}if(p.price!==undefined){const v=Number(p.price);if(!Number.isFinite(v)||v<=0)throw Error('Price must be greater than zero.');r[4]=v;}s.getRange(i+2,1,1,5).setValues([r]);if(p.enabled!==undefined)setEnabled_(id,p.enabled===true||p.enabled==='true');return{id:String(r[0]),name:String(r[1]),image:String(r[2]||''),stock:Number(r[3]),price:Number(r[4]),enabled:!disabledIds_()[id]};}finally{lock.releaseLock();}}
+function createProduct_(p){const name=String(p.name||'').trim(),image=String(p.image||'').trim(),stock=Number(p.stock),price=Number(p.price);if(!name||!Number.isInteger(stock)||stock<0||!Number.isFinite(price)||price<=0)throw Error('Product details are invalid.');const lock=LockService.getScriptLock();if(!lock.tryLock(LOCK_TIMEOUT_MS))throw Error('The sheet is busy with another change. Please try again in a moment.');try{const s=sheet_(ITEMS_SHEET,5),n=s.getLastRow(),rows=n<2?[]:s.getRange(2,1,n-1,5).getValues(),id=nextItemId_(rows);s.getRange(Math.max(n+1,2),1,1,5).setValues([[id,name,image,stock,price]]);return{id:id,name:name,image:image,stock:stock,price:price,enabled:true};}finally{lock.releaseLock();}}
+function updateProduct_(p){const id=String(p.id||'').trim();if(!id)throw Error('Product ID is required.');const lock=LockService.getScriptLock();if(!lock.tryLock(LOCK_TIMEOUT_MS))throw Error('The sheet is busy with another change. Please try again in a moment.');try{const s=sheet_(ITEMS_SHEET,5),n=s.getLastRow();if(n<2)throw Error('Product not found.');const rows=s.getRange(2,1,n-1,5).getValues(),i=rows.findIndex(r=>String(r[0])===id);if(i<0)throw Error('Product not found.');const r=rows[i];if(p.name!==undefined){const v=String(p.name).trim();if(!v)throw Error('Product name is required.');r[1]=v;}if(p.image!==undefined)r[2]=String(p.image).trim();if(p.stock!==undefined){const v=Number(p.stock);if(!Number.isInteger(v)||v<0)throw Error('Stock must be zero or more.');r[3]=v;}if(p.price!==undefined){const v=Number(p.price);if(!Number.isFinite(v)||v<=0)throw Error('Price must be greater than zero.');r[4]=v;}s.getRange(i+2,1,1,5).setValues([r]);if(p.enabled!==undefined)setEnabled_(id,p.enabled===true||p.enabled==='true');return{id:String(r[0]),name:String(r[1]),image:String(r[2]||''),stock:Number(r[3]),price:Number(r[4]),enabled:!disabledIds_()[id]};}finally{lock.releaseLock();}}
 function updateStock_(p){const stock=Number(p.stock);if(!Number.isInteger(stock)||stock<0)throw Error('Stock must be zero or more.');return updateProduct_({id:p.id,stock:stock});}
 function updatePayment_(p){const id=String(p.orderId||'').trim(),status=String(p.status||'');if(!id||!['Pending','Paid'].includes(status))throw Error('Payment status is invalid.');const s=sheet_(ORDERS_SHEET,6),n=s.getLastRow();if(n<2)throw Error('Order not found.');const ids=s.getRange(2,1,n-1,1).getValues(),i=ids.findIndex(r=>String(r[0])===id);if(i<0)throw Error('Order not found.');s.getRange(i+2,6).setValue(status);return{id:id,status:status};}
 function adminChallenge_(){const nonce=Utilities.getUuid()+Utilities.getUuid();CacheService.getScriptCache().put('login:'+nonce,'1',120);return{nonce:nonce};}

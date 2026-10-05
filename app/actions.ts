@@ -68,6 +68,7 @@ export async function refreshViewsAction(): Promise<void> {
 export async function placeOrderAction(
   itemId: string,
   quantity: number,
+  requestId?: string,
 ): Promise<ActionResult<Order>> {
   const cleanId = itemId.trim();
   const cleanQuantity = Number(quantity);
@@ -78,7 +79,7 @@ export async function placeOrderAction(
   }
 
   try {
-    const order = await placeOrder(cleanId, cleanQuantity);
+    const order = await placeOrder(cleanId, cleanQuantity, requestId);
     refreshStorefront();
     return { ok: true, data: order };
   } catch (error) {

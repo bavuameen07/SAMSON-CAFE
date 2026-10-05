@@ -32,6 +32,26 @@ export class UnknownActionError extends SheetsError {
   }
 }
 
+/**
+ * A write was accepted but no record came back, so the outcome is genuinely
+ * unknown: the order may or may not have been written. This must never be
+ * reported as an unsupported action, which would tell the customer to retry into
+ * a duplicate order.
+ */
+export class IndeterminateResultError extends SheetsError {
+  readonly actions: string[];
+
+  constructor(actions: string[] = []) {
+    super(
+      actions.length > 0
+        ? `Apps Script accepted the request but returned no record, so the outcome is unknown. It supports: ${actions.join(", ")}.`
+        : "Apps Script accepted the request but returned no record, so the outcome is unknown.",
+    );
+    this.name = "IndeterminateResultError";
+    this.actions = actions;
+  }
+}
+
 export const SHEETS_TAGS = {
   products: "products",
   orders: "orders",
@@ -79,7 +99,10 @@ function toRows(value: unknown): unknown[] {
  * `{ success, message, actions }` banner for any action they do not know.
  * Both are accepted so the storefront survives a redeploy gap.
  */
-async function unwrap<T>(response: Response): Promise<T> {
+async function unwrap<T>(
+  response: Response,
+  emptySuccess: "unknown-action" | "indeterminate" = "unknown-action",
+): Promise<T> {
   if (!response.ok) {
     throw new SheetsError(
       `Google Apps Script responded with HTTP ${response.status}. Redeploy the web app if this persists.`,
@@ -125,19 +148,20 @@ async function unwrap<T>(response: Response): Promise<T> {
   }
 
   // Legacy envelope. A bare `{ success: true, actions: [...] }` carries no
-  // rows and no created object, which means the action itself is unrecognised
-  // by this deployment.
+  // rows and no created object. For a read that means the action is
+  // unrecognised and the caller should try another name; for a write it means
+  // the call may have landed without returning the record it created.
   if (envelope.success === true) {
     if (Array.isArray(envelope.items)) return envelope.items as T;
     if (Array.isArray(envelope.orders)) return envelope.orders as T;
     // placeOrder answers `{ success, message, order }` on this deployment.
     if (envelope.order !== undefined) return envelope.order as T;
     if (envelope.data !== undefined) return envelope.data as T;
-    throw new UnknownActionError(
-      Array.isArray(envelope.actions)
-        ? envelope.actions.filter((entry): entry is string => typeof entry === "string")
-        : [],
-    );
+    const advertised = Array.isArray(envelope.actions)
+      ? envelope.actions.filter((entry): entry is string => typeof entry === "string")
+      : [];
+    if (emptySuccess === "indeterminate") throw new IndeterminateResultError(advertised);
+    throw new UnknownActionError(advertised);
   }
 
   if (envelope.success === false) {
@@ -161,17 +185,28 @@ async function unwrap<T>(response: Response): Promise<T> {
 const LIVE_TIMEOUT_MS = 15_000;
 const CACHED_TIMEOUT_MS = 30_000;
 
-async function send(url: string, init: RequestInit, action: string, timeoutMs: number) {
+async function send(
+  url: string,
+  init: RequestInit,
+  action: string,
+  timeoutMs: number,
+  timeoutHint?: string,
+) {
   try {
     return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
   } catch (error) {
     if (error instanceof Error && error.name === "TimeoutError") {
+      // A timeout means no confirmation arrived, not that nothing happened. The
+      // write may still land, so say so instead of telling the customer to
+      // redeploy, which this error never implies.
       throw new SheetsError(
-        `Google Apps Script did not answer "${action}" within ${timeoutMs / 1000}s. The deployed web app is not completing this request. Redeploy apps-script/Code.gs.`,
+        `Google Apps Script did not answer "${action}" within ${timeoutMs / 1000}s, so the outcome is unknown. ${
+          timeoutHint ?? "Check whether the change was saved before submitting again."
+        }`,
       );
     }
     throw new SheetsError(
-      `Could not reach Google Apps Script for "${action}". Check the deployed web app URL and your connection.`,
+      `Could not reach Google Apps Script for "${action}". Check your connection and the web app URL, then try again.`,
     );
   }
 }
@@ -197,7 +232,12 @@ function cached<T>(action: string, params: Params, revalidate: number, tags: str
  * `{ action, itemId, quantity }`. The action is repeated in the query string
  * so the call is self-describing in the Apps Script execution log.
  */
-function postJson<T>(action: string, body: Params = {}): Promise<T> {
+function postJson<T>(
+  action: string,
+  body: Params = {},
+  timeoutHint?: string,
+  emptySuccess: "unknown-action" | "indeterminate" = "unknown-action",
+): Promise<T> {
   return send(
     buildUrl(action),
     {
@@ -208,7 +248,8 @@ function postJson<T>(action: string, body: Params = {}): Promise<T> {
     },
     action,
     LIVE_TIMEOUT_MS,
-  ).then((response) => unwrap<T>(response));
+    timeoutHint,
+  ).then((response) => unwrap<T>(response, emptySuccess));
 }
 
 function sha256Hex(value: string): string {
@@ -275,11 +316,31 @@ export async function getDeploymentInfo(): Promise<DeploymentInfo> {
  * Price, total and payment status are derived server-side from the Items sheet,
  * so they are deliberately not sent and cannot be forged by the browser. A GET
  * to the same action returns the generic banner and creates nothing.
+ *
+ * `requestId` is an idempotency key. Code.gs remembers it briefly, so a retry
+ * after a timeout returns the order it already wrote rather than duplicating it.
  */
-export async function placeOrder(itemId: string, quantity: number): Promise<Order> {
+export async function placeOrder(
+  itemId: string,
+  quantity: number,
+  requestId?: string,
+): Promise<Order> {
+  const key = requestId ? { requestId } : {};
   try {
-    return normalizeOrder(await postJson<unknown>("placeOrder", { itemId, quantity }));
+    return normalizeOrder(
+      await postJson<unknown>(
+        "placeOrder",
+        { itemId, quantity, ...key },
+        "Retrying is safe: this request carries an idempotency key, so if the order was already written the script returns that same order instead of creating a second one.",
+        "indeterminate",
+      ),
+    );
   } catch (error) {
+    if (error instanceof IndeterminateResultError) {
+      throw new SheetsError(
+        "Google Apps Script accepted the order request but did not return the order it created, so this order is unconfirmed. Do not submit again yet: check the admin orders list first. If it is not there, placing the order again is safe because this request carries an idempotency key.",
+      );
+    }
     if (error instanceof UnknownActionError) {
       // The banner means this deployment advertised placeOrder but did not
       // create an order from it, so name the build rather than blame the cart.
