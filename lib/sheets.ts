@@ -143,13 +143,38 @@ async function unwrap<T>(response: Response): Promise<T> {
   );
 }
 
+/**
+ * A broken deployment can hold the request open until Apps Script gives up,
+ * which surfaces as a bare HTTP 404 after ~35s. Cap the wait so checkout
+ * reports a real reason quickly instead of appearing to hang.
+ */
+const LIVE_TIMEOUT_MS = 15_000;
+const CACHED_TIMEOUT_MS = 30_000;
+
+async function send(url: string, init: RequestInit, action: string, timeoutMs: number) {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    if (error instanceof Error && error.name === "TimeoutError") {
+      throw new SheetsError(
+        `Google Apps Script did not answer "${action}" within ${timeoutMs / 1000}s. The deployed web app is not completing this request. Redeploy apps-script/Code.gs.`,
+      );
+    }
+    throw new SheetsError(
+      `Could not reach Google Apps Script for "${action}". Check the deployed web app URL and your connection.`,
+    );
+  }
+}
+
 function live<T>(action: string, params?: Params): Promise<T> {
-  return fetch(buildUrl(action, params), { cache: "no-store" }).then((response) => unwrap<T>(response));
+  return send(buildUrl(action, params), { cache: "no-store" }, action, LIVE_TIMEOUT_MS).then(
+    (response) => unwrap<T>(response),
+  );
 }
 
 function cached<T>(action: string, params: Params, revalidate: number, tags: string[]): Promise<T> {
-  return fetch(buildUrl(action, params), { next: { revalidate, tags } }).then((response) =>
-    unwrap<T>(response),
+  return send(buildUrl(action, params), { next: { revalidate, tags } }, action, CACHED_TIMEOUT_MS).then(
+    (response) => unwrap<T>(response),
   );
 }
 
@@ -188,9 +213,24 @@ export async function getProducts(): Promise<Product[]> {
   );
 }
 
-/** Stock is revalidated and decremented inside Apps Script under a script lock. */
+/**
+ * Stock is revalidated and decremented inside Apps Script under a script lock.
+ *
+ * Unlike reads, there is no legacy fallback: an older deployment answers an
+ * unusable placeOrder with its generic banner instead of an order, so this
+ * reports that plainly rather than letting the customer retry a broken call.
+ */
 export async function placeOrder(itemId: string, quantity: number): Promise<Order> {
-  return normalizeOrder(await live<unknown>("placeOrder", { itemId, quantity }));
+  try {
+    return normalizeOrder(await live<unknown>("placeOrder", { itemId, quantity }));
+  } catch (error) {
+    if (error instanceof UnknownActionError) {
+      throw new SheetsError(
+        "The deployed web app did not accept this order. Its placeOrder handler is not the current build, so orders cannot be created. Redeploy apps-script/Code.gs.",
+      );
+    }
+    throw error;
+  }
 }
 
 /**
