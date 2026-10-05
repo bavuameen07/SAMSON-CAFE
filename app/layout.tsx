@@ -36,7 +36,10 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${sans.variable} ${serif.variable}`}>
-      <body>{children}</body>
+      {/* ColorZilla injects cz-shortcut-listen onto <body> before React
+          hydrates, which React reports as an attribute mismatch. Nothing in
+          this app sets it, so the warning is safe to suppress here. */}
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 }
