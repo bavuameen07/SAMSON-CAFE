@@ -4,11 +4,11 @@ import { useMemo, useState, useTransition } from "react";
 import { updatePaymentAction } from "@/app/actions";
 import { RefreshButton } from "@/components/refresh-button";
 import { buttonClasses } from "@/components/ui/button";
-import { toolbarControlClasses, toolbarSearchClasses } from "@/components/ui/field";
+import { toolbarControlClasses, toolbarSearchClasses, labelClasses } from "@/components/ui/field";
 import { Modal } from "@/components/ui/modal";
 import { Toast, useToast } from "@/components/ui/toast";
-import { formatDateTime, formatMoney, isoDay } from "@/lib/format";
-import type { DisplaySettings, Order, OrderStatus } from "@/lib/types";
+import { formatDateTime, formatMoney, dateValue, isoDay } from "@/lib/format";
+import { ORDER_STATUSES, type DisplaySettings, type Order, type OrderStatus } from "@/lib/types";
 import { PaymentBadge } from "./badges";
 import { OrdersTable } from "./orders-table";
 import { AdminCard, AdminHeading } from "./section";
@@ -38,17 +38,16 @@ export function OrdersManager({ orders, settings }: OrdersManagerProps) {
       return true;
     });
     return filtered.sort((a, b) => {
-      const delta = new Date(a.date).getTime() - new Date(b.date).getTime();
+      const delta = dateValue(a.date) - dateValue(b.date);
       return sort === "oldest" ? delta : -delta;
     });
   }, [orders, query, status, date, sort, settings.timezone]);
 
   const selected = selectedId ? (orders.find((order) => order.id === selectedId) ?? null) : null;
 
-  function changePayment(order: Order) {
-    const next: OrderStatus = order.status === "Paid" ? "Pending" : "Paid";
+  function changePayment(order: Order, next: OrderStatus) {
     startTransition(async () => {
-      const result = await updatePaymentAction(order.id, next);
+      const result = await updatePaymentAction(order.id, order.itemId, next);
       if (!result.ok) {
         showToast(result.error, "error");
         return;
@@ -85,8 +84,11 @@ export function OrdersManager({ orders, settings }: OrdersManagerProps) {
               className={toolbarControlClasses}
             >
               <option value="">All payment statuses</option>
-              <option value="Pending">Pending</option>
-              <option value="Paid">Paid</option>
+              {ORDER_STATUSES.map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
             </select>
             <input
               type="date"
@@ -116,7 +118,7 @@ export function OrdersManager({ orders, settings }: OrdersManagerProps) {
           settings={settings}
           pending={pending}
           onClose={() => setSelectedId(null)}
-          onPayment={() => changePayment(selected)}
+          onPayment={(next) => changePayment(selected, next)}
         />
       ) : null}
 
@@ -139,7 +141,7 @@ type OrderDetailsModalProps = {
   settings: DisplaySettings;
   pending: boolean;
   onClose: () => void;
-  onPayment: () => void;
+  onPayment: (status: OrderStatus) => void;
 };
 
 function OrderDetailsModal({
@@ -154,19 +156,9 @@ function OrderDetailsModal({
       title="Order details"
       onClose={onClose}
       footer={
-        <>
-          <button type="button" onClick={onClose} className={buttonClasses("adminLight")}>
-            CLOSE
-          </button>
-          <button
-            type="button"
-            onClick={onPayment}
-            disabled={pending}
-            className={buttonClasses("admin")}
-          >
-            {pending ? "SAVING…" : order.status === "Paid" ? "MARK PENDING" : "MARK PAID"}
-          </button>
-        </>
+        <button type="button" onClick={onClose} className={buttonClasses("adminLight")}>
+          CLOSE
+        </button>
       }
     >
       <div className="grid grid-cols-2 gap-[10px] text-[13px]">
@@ -179,6 +171,29 @@ function OrderDetailsModal({
         <div className="rounded-[7px] bg-[#faf8f5] p-[10px]">
           <small className="mb-1 block text-muted">Payment status</small>
           <PaymentBadge status={order.status} />
+        </div>
+      </div>
+
+      <div className="mt-[14px] flex flex-col gap-[7px] border-t border-[#eff0f2] pt-[14px]">
+        <label htmlFor="payment-status" className={labelClasses}>
+          Set payment status
+        </label>
+        <div className="flex flex-wrap gap-[7px]">
+          {ORDER_STATUSES.map((value) => {
+            const active = order.status === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                onClick={() => onPayment(value)}
+                disabled={pending || active}
+                aria-pressed={active}
+                className={buttonClasses(active ? "admin" : "adminLight")}
+              >
+                {value.toUpperCase()}
+              </button>
+            );
+          })}
         </div>
       </div>
     </Modal>

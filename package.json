@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "images": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/generate-menu-images.mjs",
     "images:fallback": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/generate-menu-images.mjs --fallback",
-    "images:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-image-plans.mjs"
+    "images:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-image-plans.mjs",
+    "script:check": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/check-apps-script.mjs"
   },
   "dependencies": {
     "next": "16.3.8",

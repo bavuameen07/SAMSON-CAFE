@@ -75,7 +75,7 @@ async function parseArgs(argv) {
 /** Product names straight from the deployed sheet, when it is reachable. */
 async function sheetNames(scriptUrl) {
   if (!scriptUrl) return [];
-  const actions = ["getProducts", "getPublicItems", "getItems"];
+  const actions = ["getPublicItems", "getItems"];
   for (const action of actions) {
     try {
       const response = await fetch(`${scriptUrl}?action=${action}`, {

@@ -4,17 +4,28 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 import { config } from "./config";
-import { requestAdminToken, SheetsError } from "./sheets";
+import { ApiError } from "./sheets";
 
 const COOKIE_NAME = "samson_admin";
 const SESSION_MAX_AGE_SECONDS = 6 * 60 * 60;
-/** Apps Script caches its admin token for six hours; refresh five minutes early. */
-const TOKEN_TTL_MS = (6 * 60 * 60 - 5 * 60) * 1000;
+
+/**
+ * Admin sessions are a signed, httpOnly cookie held by this app.
+ *
+ * The Apps Script admin key authorises the *API*; it never comes near the
+ * browser. A request from the browser carries only this cookie, and the server
+ * attaches the admin key itself when it calls the backend. That keeps the key out
+ * of the client bundle, out of URLs and out of anything a customer can read,
+ * while the cookie still guarantees that /admin is unreachable without signing
+ * in.
+ */
 
 function signingSecret(): string {
-  const secret = config.authSecret || config.adminPassword;
+  const secret = config.authSecret;
   if (!secret) {
-    throw new Error("Set ADMIN_PASSWORD and AUTH_SECRET in .env.local before using the admin area.");
+    throw new Error(
+      "AUTH_SECRET is not set, so admin sessions cannot be signed and /admin is unavailable. Set AUTH_SECRET in .env.local and in Vercel — it must not be the admin key.",
+    );
   }
   return secret;
 }
@@ -37,36 +48,10 @@ export function verifySessionValue(value: string | undefined): boolean {
   try {
     return matches(sign(value.slice(0, separator)), value.slice(separator + 1));
   } catch {
+    // An unset AUTH_SECRET cannot sign anything, so there is no valid session to
+    // accept. Returning false sends the visitor to /admin/login, which reports
+    // the missing variable instead of showing a server error page.
     return false;
-  }
-}
-
-let cachedToken: { token: string; expiresAt: number } | null = null;
-
-async function currentAdminToken(): Promise<string> {
-  const now = Date.now();
-  if (cachedToken && cachedToken.expiresAt > now) return cachedToken.token;
-  if (!config.adminPassword) {
-    throw new SheetsError("ADMIN_PASSWORD is not set in .env.local.");
-  }
-  const token = await requestAdminToken(config.adminPassword);
-  cachedToken = { token, expiresAt: now + TOKEN_TTL_MS };
-  return token;
-}
-
-/**
- * Runs an admin call, refreshing the Apps Script token once if the sheet reports
- * an expired session. CacheService evicts entries without warning, so a token
- * that worked earlier can stop working between page loads.
- */
-export async function withAdminToken<T>(run: (token: string) => Promise<T>): Promise<T> {
-  try {
-    return await run(await currentAdminToken());
-  } catch (error) {
-    const expired = error instanceof SheetsError && /session expired/i.test(error.message);
-    if (!expired) throw error;
-    cachedToken = null;
-    return run(await currentAdminToken());
   }
 }
 
@@ -100,16 +85,30 @@ export async function requireAdmin(): Promise<void> {
 /** Guard for server actions, which must not rely on the cookie being checked elsewhere. */
 export async function assertAdmin(): Promise<void> {
   if (!(await isAdminAuthenticated())) {
-    throw new SheetsError("Your admin session has ended. Sign in again.");
+    throw new ApiError("Your admin session has ended. Sign in again.");
   }
 }
 
-/** Timing-safe comparison so the password cannot be probed by response timing. */
-export function passwordMatches(candidate: string): boolean {
-  if (!config.adminPassword) return false;
-  return matches(sha256Hex(candidate), sha256Hex(config.adminPassword));
+/**
+ * Checks the submitted admin key against the configured one.
+ *
+ * Both sides are hashed with a fixed key before comparison and compared with
+ * `timingSafeEqual`, so the check cannot be probed by response timing and the key
+ * itself is never compared or stored directly.
+ *
+ * There is no fallback key: if `ADMIN_KEY` is unset this reports the missing
+ * configuration rather than rejecting the sign-in as a wrong key, which would
+ * send the operator looking for the wrong problem.
+ */
+export function adminKeyMatches(candidate: string): boolean {
+  if (!config.adminKey) {
+    throw new ApiError(
+      "ADMIN_KEY is not set, so no admin key can be accepted. Set ADMIN_KEY in .env.local and in Vercel — it must match SAMSON_ADMIN_KEY in Apps Script.",
+    );
+  }
+  return matches(hashKey(candidate), hashKey(config.adminKey));
 }
 
-function sha256Hex(value: string): string {
-  return createHmac("sha256", "samson-cafe-compare").update(value, "utf8").digest("hex");
+function hashKey(value: string): string {
+  return createHmac("sha256", "samson-cafe-admin-key").update(value, "utf8").digest("hex");
 }

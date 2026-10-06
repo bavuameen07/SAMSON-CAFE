@@ -15,20 +15,19 @@ export function badgeClasses(tone: BadgeTone): string {
   return `${BASE} ${TONES[tone]}`;
 }
 
+const PAYMENT_TONES: Record<OrderStatus, BadgeTone> = {
+  Paid: "success",
+  Pending: "warning",
+  Failed: "danger",
+  Cancelled: "neutral",
+};
+
 export function PaymentBadge({ status }: { status: OrderStatus }) {
-  return <span className={badgeClasses(status === "Paid" ? "success" : "warning")}>{status}</span>;
+  return <span className={badgeClasses(PAYMENT_TONES[status])}>{status.toUpperCase()}</span>;
 }
 
 export function StockBadge({ stock, threshold }: { stock: number; threshold: number }) {
   if (stock <= 0) return <span className={badgeClasses("danger")}>OUT OF STOCK</span>;
   if (stock <= threshold) return <span className={badgeClasses("warning")}>LOW STOCK</span>;
   return <span className={badgeClasses("success")}>IN STOCK</span>;
-}
-
-export function MenuBadge({ enabled }: { enabled: boolean }) {
-  return (
-    <span className={badgeClasses(enabled ? "success" : "danger")}>
-      {enabled ? "ENABLED" : "DISABLED"}
-    </span>
-  );
 }

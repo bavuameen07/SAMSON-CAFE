@@ -1,5 +1,5 @@
-import { toBoolean, toNumber, toText } from "./coerce";
-import type { DisplayProduct, Order, OrderStatus, Product } from "./types";
+import { toNumber, toText } from "./coerce";
+import { ORDER_STATUSES, type DisplayProduct, type Order, type OrderStatus, type Product } from "./types";
 
 type RawRow = Record<string, unknown> | unknown[];
 
@@ -26,45 +26,50 @@ function field(row: RawRow, keys: readonly (string | number)[]): unknown {
 }
 
 function orderStatus(value: unknown): OrderStatus {
-  return toText(value).toLowerCase() === "paid" ? "Paid" : "Pending";
+  const text = toText(value);
+  const match = ORDER_STATUSES.find((status) => status.toLowerCase() === text.toLowerCase());
+  return match ?? "Pending";
 }
 
 /**
- * Item images are arbitrary URLs held in the sheet. Older Apps Script builds
- * returned the literal placeholder "CellImage" instead of a URL, so anything
- * that is not http(s) is treated as absent and the layout's fallback is used.
+ * Item images are arbitrary URLs held in the sheet, and the sheet also carries
+ * the literal placeholder "CellImage" where no picture was inserted. Anything
+ * that is not an http(s) URL is treated as absent so the layout's own fallback
+ * photo is used instead of a broken image.
  */
 function toImage(value: unknown): string {
   const text = toText(value);
   return /^https?:\/\/\S+$/i.test(text) ? text : "";
 }
 
-/** Items columns: id, name, image, stock, price. Enable state lives in script properties. */
+/** Items columns: id, name, image, stock, price. */
 export function normalizeProduct(raw: unknown): Product {
   const row = asRow(raw);
   return {
-    id: toText(field(row, ["id", "ID", 0])),
-    name: toText(field(row, ["name", "NAME", 1])),
-    image: toImage(field(row, ["image", "IMAGE", 2])),
-    stock: toNumber(field(row, ["stock", "STOCK", 3])),
-    price: toNumber(field(row, ["price", "PRICE", 4])),
-    // `available` is the flag name used by pre-admin-dashboard deployments.
-    enabled: toBoolean(field(row, ["enabled", "available"]), true),
+    id: toText(field(row, ["id", "itemId", 0])),
+    name: toText(field(row, ["name", 1])),
+    image: toImage(field(row, ["image", 2])),
+    stock: toNumber(field(row, ["stock", 3])),
+    price: toNumber(field(row, ["price", 4])),
   };
 }
 
-/** Orders columns: order id, item id, quantity, total, date, payment status. */
+/**
+ * Orders columns: order id, item id, quantity, total amount, date/time, payment
+ * status. `placeOrder` also reports `itemName`, which `getOrders` omits; that is
+ * resolved from the items sheet by `withProductDetails`.
+ */
 export function normalizeOrder(raw: unknown): Order {
   const row = asRow(raw);
   return {
-    id: toText(field(row, ["id", "orderId", 0])),
-    itemId: toText(field(row, ["itemId", "itemID", 1])),
+    id: toText(field(row, ["orderId", "id", 0])),
+    itemId: toText(field(row, ["itemId", 1])),
     itemName: toText(field(row, ["itemName"])),
     image: toText(field(row, ["image"])),
     quantity: toNumber(field(row, ["quantity", 2])),
-    total: toNumber(field(row, ["total", "totalAmount", 3])),
-    date: toText(field(row, ["date", "dateTime", 4])),
-    status: orderStatus(field(row, ["status", "paymentStatus", 5])),
+    total: toNumber(field(row, ["totalAmount", "total", 3])),
+    date: toText(field(row, ["dateTime", "date", 4])),
+    status: orderStatus(field(row, ["paymentStatus", "status", 5])),
   };
 }
 

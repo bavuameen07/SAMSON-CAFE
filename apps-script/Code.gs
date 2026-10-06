@@ -9,11 +9,11 @@ const ITEMS_SHEET='Items', ORDERS_SHEET='Orders', TOKEN_TTL_SECONDS=21600;
 const LOCK_TIMEOUT_MS=5000,IDEMPOTENCY_TTL_SECONDS=900;
 /** Bump BUILD_ID whenever Code.gs changes, so clients can detect a stale deployment via the `version` action. */
 const BUILD_ID='2026-10-05-admin-integration';
-const ACTIONS_=['version','getProducts','adminChallenge','adminLogin','getOrders','placeOrder','createProduct','updateProduct','updateStock','updatePayment'];
+const ACTIONS_=['version','getProducts','getPublicItems','getItems','adminChallenge','adminLogin','getOrders','placeOrder','createProduct','updateProduct','updateStock','updatePayment'];
 function doGet(e){return run_(e,e&&e.parameter||{},null);}
 function doPost(e){const b=e&&e.postBody,json=b&&String(b.type||'').indexOf('application/json')>=0?b.contents:null;return run_(e,e&&e.parameter||{},json);}
 function run_(e,q,json){let p={};try{if(json){p=JSON.parse(json);if(!q.action&&p.action)q.action=p.action;}else if(q.payload){p=JSON.parse(q.payload);}Object.keys(q).forEach(k=>{if(!['action','callback','payload'].includes(k))p[k]=q[k];});return respond_(e,{ok:true,data:dispatch_(String(q.action||''),p)});}catch(err){return respond_(e,{ok:false,code:err&&err.code||'APP_ERROR',message:safeMessage_(err)});}}
-function dispatch_(a,p){switch(a){case'version':return version_();case'getProducts':return getProducts_();case'adminChallenge':return adminChallenge_();case'adminLogin':return adminLogin_(p.nonce,p.proof);case'getOrders':requireAdmin_(p.adminToken);return getOrders_();case'placeOrder':return createOrder_(p);case'createProduct':requireAdmin_(p.adminToken);return createProduct_(p);case'updateProduct':requireAdmin_(p.adminToken);return updateProduct_(p);case'updateStock':requireAdmin_(p.adminToken);return updateStock_(p);case'updatePayment':requireAdmin_(p.adminToken);return updatePayment_(p);default:throw Error('Unknown API action "'+a+'". Supported actions: '+ACTIONS_.join(', ')+'.');}}
+function dispatch_(a,p){switch(a){case'version':return version_();case'getProducts':return getProducts_();case'getPublicItems':return getPublicItems_();case'getItems':return getItems_();case'adminChallenge':return adminChallenge_();case'adminLogin':return adminLogin_(p.nonce,p.proof);case'getOrders':requireAdmin_(p.adminToken);return getOrders_();case'placeOrder':return createOrder_(p);case'createProduct':requireAdmin_(p.adminToken);return createProduct_(p);case'updateProduct':requireAdmin_(p.adminToken);return updateProduct_(p);case'updateStock':requireAdmin_(p.adminToken);return updateStock_(p);case'updatePayment':requireAdmin_(p.adminToken);return updatePayment_(p);default:throw Error('Unknown API action "'+a+'". Supported actions: '+ACTIONS_.join(', ')+'.');}}
 function version_(){return{build:BUILD_ID,actions:ACTIONS_.slice(),itemsSheet:ITEMS_SHEET,ordersSheet:ORDERS_SHEET};}
 function spreadsheet_(){const id=PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')||'1vDEiG_-KM4rfdb9cb6UPzE86BieHmtHKhLivOLVX61w';return SpreadsheetApp.openById(id);}
 function sheetIn_(ss,n,min){const s=ss.getSheetByName(n);if(!s)throw Error('Required sheet is missing: '+n);if(s.getMaxColumns()<min)throw Error('Sheet structure does not match: '+n);return s;}
@@ -21,6 +21,13 @@ function sheet_(n,min){return sheetIn_(spreadsheet_(),n,min);}
 /** Structured logging for the order path. Never logs credentials or tokens. */
 function log_(m){try{console.log(m);}catch(err){}}
 function getProducts_(){const s=sheet_(ITEMS_SHEET,5),n=s.getLastRow();if(n<2)return[];const d=disabledIds_();return s.getRange(2,1,n-1,5).getValues().filter(r=>r[0]!=='').map(r=>({id:String(r[0]),name:String(r[1]),image:String(r[2]||''),stock:Number(r[3])||0,price:Number(r[4])||0,enabled:!d[String(r[0])] }));}
+/** The two pre-dashboard customer action names, kept so redeploying this build does not
+ *  remove an action that older clients and older deployed copies of the app still call.
+ *  They reuse the getProducts_ read and only reshape the fields: `getItems` reports every
+ *  item, `getPublicItems` reports only items still enabled, so a disabled product is never
+ *  advertised to a public caller. Nothing about the Items sheet changes. */
+function getItems_(){return getProducts_().map(r=>({id:r.id,name:r.name,image:r.image,stock:r.stock,price:r.price}));}
+function getPublicItems_(){return getProducts_().filter(r=>r.enabled).map(r=>({id:r.id,name:r.name,image:r.image,price:r.price,stock:r.stock,available:true}));}
 function getOrders_(){const s=sheet_(ORDERS_SHEET,6),n=s.getLastRow();if(n<2)return[];return s.getRange(2,1,n-1,6).getValues().filter(r=>r[0]!=='').map(r=>({id:String(r[0]),itemId:String(r[1]),quantity:Number(r[2])||0,total:Number(r[3])||0,date:r[4] instanceof Date?r[4].toISOString():String(r[4]),status:String(r[5]||'Pending')})).reverse();}
 /** Reads one existing order back, so a repeated requestId returns it unchanged. */
 function findOrder_(orderId){const s=sheet_(ORDERS_SHEET,6),n=s.getLastRow();if(n<2)return null;const r=s.getRange(2,1,n-1,6).getValues().find(x=>String(x[0])===orderId);if(!r)return null;return{id:String(r[0]),itemId:String(r[1]),quantity:Number(r[2])||0,total:Number(r[3])||0,date:r[4]instanceof Date?r[4].toISOString():String(r[4]),status:String(r[5]||'Pending')};}

@@ -70,7 +70,6 @@ export default async function MenuPage() {
                     </div>
                     <Availability
                       stock={product.stock}
-                      enabled={product.enabled}
                       threshold={settings.lowStockThreshold}
                     />
                     <Link

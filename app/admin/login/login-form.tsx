@@ -37,16 +37,16 @@ export function LoginForm() {
         ) : null}
 
         <div className="mb-[15px] flex flex-col gap-[7px]">
-          <label htmlFor="admin-password" className={labelClasses}>
-            Admin password
+          <label htmlFor="admin-key" className={labelClasses}>
+            Admin key
           </label>
           <input
-            id="admin-password"
-            name="password"
+            id="admin-key"
+            name="adminKey"
             type="password"
             autoComplete="current-password"
             required
-            placeholder="Enter admin password"
+            placeholder="Enter admin key"
             className={inputClasses}
           />
         </div>

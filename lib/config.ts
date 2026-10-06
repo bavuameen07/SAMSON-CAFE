@@ -2,22 +2,60 @@ import "server-only";
 import type { DisplaySettings } from "./types";
 
 /**
- * Config is hard-coded rather than read from the environment, so the app runs
- * with no env setup. These values stay server-side: this module imports
- * "server-only" and is never pulled into a client bundle, so the browser never
- * sees the script URL or the admin credentials.
+ * Values are read from the environment here rather than inlined at each use site.
  *
- * The one exception is the web app URL. Redeploying Apps Script produces a new
- * URL, so `GOOGLE_SCRIPT_URL` lets a hosting platform supply it without a source
- * edit; the hard-coded value below stays the default.
+ * The admin credentials have **no built-in default on purpose**. An earlier
+ * revision committed both the admin key and the cookie-signing secret as
+ * fallbacks, which meant anyone holding the repository could sign in to `/admin`
+ * and forge an admin session cookie outright. Both now come from the environment
+ * only, and `lib/admin-session.ts` and `lib/sheets.ts` fail loudly with setup
+ * instructions when they are missing rather than quietly falling back to
+ * something weak.
+ *
+ * These are deliberately NOT `NEXT_PUBLIC_` variables. This module imports
+ * "server-only" and is never pulled into a client bundle, so the browser never
+ * sees the script URL, the admin key or the session secret. Only
+ * `displaySettings()` below crosses the boundary, and it carries no secrets.
  */
 export const config = {
+  /**
+   * The deployed Apps Script web app. This is the single endpoint the whole app
+   * talks to — customer menu, checkout and every admin page.
+   *
+   * `GOOGLE_SCRIPT_URL` wins when set; the literal below is the fallback so the
+   * public storefront still works with no env file at all. Redeploying Apps
+   * Script issues a new URL, so putting it in `.env.local` (and in Vercel) means
+   * a redeploy never needs a source edit.
+   */
   googleScriptUrl:
     process.env.GOOGLE_SCRIPT_URL ??
-    "https://script.google.com/macros/s/AKfycbwR1n3HwHjVFlkCEd90RT03lNGGtEBxdgUKJ4pv0nG8uFYqk3ySNCHAXReni3YvZdDvHA/exec",
-  adminPassword: "admin1234",
-  authSecret:
-    "6df7a5e5a532fcc76fec3e3aab34701b643f8deb780d657282e2e915e3f02764",
+    "https://script.google.com/macros/s/AKfycbzqnhSZiR3vtvBa7luyGjr9GPGlkqFP7s1b-aEAYc9nmMkf-7zXuXZ2TXRkBsFzedEARw/exec",
+
+  /**
+   * The admin key the Apps Script expects on every admin action. Required.
+   *
+   * This module imports "server-only" and is never pulled into a client bundle,
+   * so the key never reaches the browser. Every admin call is made from a server
+   * component or a server action, which appends this key itself — no admin
+   * request is ever built in the client.
+   *
+   * Set `ADMIN_KEY` on Vercel and in `.env.local`. It must match
+   * `SAMSON_ADMIN_KEY` in the Apps Script project's Script properties, or every
+   * admin request is refused with "Unauthorized admin request".
+   */
+  adminKey: process.env.ADMIN_KEY ?? "",
+
+  /**
+   * Signs the admin session cookie, which is what actually protects /admin.
+   * Required.
+   *
+   * The Apps Script key authorises the API; this secret authorises the browser.
+   * It is deliberately not allowed to fall back to the admin key: reusing the API
+   * credential for cookie signing would mean one leaked value opens both doors.
+   * Changing it signs existing admins out.
+   */
+  authSecret: process.env.AUTH_SECRET ?? "",
+
 
   /**
    * Where a product with no picture in the sheet gets one from.
@@ -50,7 +88,6 @@ export const config = {
 };
 
 export const isSheetsConfigured = config.googleScriptUrl.length > 0;
-
 /** Passed down to client components as props, since config is not readable there. */
 export function displaySettings(): DisplaySettings {
   return {

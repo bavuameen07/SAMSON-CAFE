@@ -4,30 +4,31 @@ import { revalidatePath, updateTag } from "next/cache";
 import { redirect } from "next/navigation";
 import type { ActionResult, LoginState } from "@/lib/action";
 import {
+  adminKeyMatches,
   assertAdmin,
   clearAdminSession,
   createAdminSession,
-  passwordMatches,
-  withAdminToken,
 } from "@/lib/admin-session";
 import { resolveProductImage } from "@/lib/product-images";
 import {
+  addItem,
+  ApiError,
   checkDeployment,
-  createProduct,
+  deleteItem,
   describeDeployment,
   type DeploymentReport,
+  getItems,
   getOrders,
   placeOrder,
-  SheetsError,
+  setStock,
   SHEETS_TAGS,
+  updateItem,
   updatePayment,
-  updateProduct,
-  updateStock,
 } from "@/lib/sheets";
-import type { Order, OrderStatus, Product, ProductDraft } from "@/lib/types";
+import { ORDER_STATUSES, type Order, type OrderStatus, type Product, type ProductDraft } from "@/lib/types";
 
 function failure(error: unknown): { ok: false; error: string } {
-  if (error instanceof SheetsError) return { ok: false, error: error.message };
+  if (error instanceof ApiError) return { ok: false, error: error.message };
   return { ok: false, error: "Something went wrong. Please try again." };
 }
 
@@ -71,29 +72,25 @@ export async function refreshViewsAction(): Promise<void> {
 }
 
 /**
- * Re-probes the configured Apps Script web app and reports what it serves.
+ * Re-probes the configured backend and reports what it serves.
  *
  * Deliberately unauthenticated: it only reads the deployment's own version and
  * action list, which is not privileged information, and it returns no sheet data
- * and no token. That is what lets the error page's TRY AGAIN test the real
- * connection — the failure being retried usually lives outside this app, and a
- * stale deployment only becomes current when somebody redeploys it.
+ * and no key. That is what lets the error page's TRY AGAIN test the real
+ * connection — the failure being retried usually lives outside this app.
  */
 export async function diagnoseSheetsAction(): Promise<ActionResult<DeploymentReport>> {
   const report = await checkDeployment();
   if (report.reachable && report.missing.length === 0) return { ok: true, data: report };
   return {
     ok: false,
-    error:
-      describeDeployment(report) ||
-      "The Apps Script web app did not answer the connection check.",
+    error: describeDeployment(report) || "The cafe backend did not answer the connection check.",
   };
 }
 
 export async function placeOrderAction(
   itemId: string,
   quantity: number,
-  requestId?: string,
 ): Promise<ActionResult<Order>> {
   const cleanId = itemId.trim();
   const cleanQuantity = Number(quantity);
@@ -104,7 +101,7 @@ export async function placeOrderAction(
   }
 
   try {
-    const order = await placeOrder(cleanId, cleanQuantity, requestId);
+    const order = await placeOrder(cleanId, cleanQuantity);
     refreshStorefront();
     return { ok: true, data: order };
   } catch (error) {
@@ -112,21 +109,34 @@ export async function placeOrderAction(
   }
 }
 
+/**
+ * Admin sign-in.
+ *
+ * The submitted value is checked against the configured admin key on the server,
+ * then one authenticated call is made to confirm the backend accepts it before a
+ * session cookie is issued. That ordering matters: a session handed out against a
+ * key the backend would reject would produce a signed-in dashboard that fails on
+ * every action.
+ */
 export async function adminLoginAction(
   _previous: LoginState,
   formData: FormData,
 ): Promise<LoginState> {
-  if (!passwordMatches(String(formData.get("password") ?? ""))) {
-    return { error: "Incorrect admin password." };
+  const submitted = String(formData.get("adminKey") ?? "").trim();
+
+  try {
+    if (!adminKeyMatches(submitted)) {
+      return { error: "Incorrect admin key." };
+    }
+  } catch (error) {
+    // An unset ADMIN_KEY is a configuration fault, not a wrong sign-in, so it is
+    // reported as such instead of "Incorrect admin key."
+    return failure(error);
   }
 
-  // Confirm the deployment can actually serve the dashboard before handing out a
-  // session. A stale web app would otherwise accept the password, set the cookie
-  // and then show "Google Sheets unavailable" on the next screen, which reads as
-  // a broken app rather than an unredeployed script. This also warms the admin
-  // token so the first dashboard load does not have to fetch one.
   try {
-    await withAdminToken((token) => getOrders(token));
+    await getItems();
+    await getOrders();
   } catch (error) {
     return failure(error);
   }
@@ -147,13 +157,12 @@ export async function createProductAction(formData: FormData): Promise<ActionRes
     if (!parsed.ok) return { ok: false, error: parsed.error };
 
     // Resolve the picture from the new product's name and store that URL on the
-    // row. The sheet then records which image the product uses, so the
-    // storefront serves the same picture without resolving it again.
+    // row, so the storefront serves the same picture without resolving it again.
     const draft: ProductDraft = parsed.draft.image
       ? parsed.draft
       : { ...parsed.draft, image: resolveProductImage(parsed.draft.name).url };
 
-    const product = await withAdminToken((token) => createProduct(token, draft));
+    const product = await addItem(draft);
     refreshStorefront();
     refreshAdminViews();
     return { ok: true, data: product };
@@ -171,25 +180,7 @@ export async function updateProductAction(formData: FormData): Promise<ActionRes
     const parsed = parseDraft(formData);
     if (!parsed.ok) return { ok: false, error: parsed.error };
 
-    const product = await withAdminToken((token) => updateProduct(token, id, parsed.draft));
-    refreshStorefront();
-    refreshAdminViews();
-    return { ok: true, data: product };
-  } catch (error) {
-    return failure(error);
-  }
-}
-
-export async function setProductEnabledAction(
-  id: string,
-  enabled: boolean,
-): Promise<ActionResult<Product>> {
-  try {
-    await assertAdmin();
-    const productId = id.trim();
-    if (!productId) return { ok: false, error: "Product ID is required." };
-
-    const product = await withAdminToken((token) => updateProduct(token, productId, { enabled }));
+    const product = await updateItem(id, parsed.draft);
     refreshStorefront();
     refreshAdminViews();
     return { ok: true, data: product };
@@ -209,7 +200,7 @@ export async function updateStockAction(id: string, stock: number): Promise<Acti
       return { ok: false, error: "Stock must be zero or more." };
     }
 
-    const product = await withAdminToken((token) => updateStock(token, productId, next));
+    const product = await setStock(productId, next);
     refreshStorefront();
     refreshAdminViews();
     return { ok: true, data: product };
@@ -218,19 +209,37 @@ export async function updateStockAction(id: string, stock: number): Promise<Acti
   }
 }
 
+export async function deleteProductAction(id: string): Promise<ActionResult<string>> {
+  try {
+    await assertAdmin();
+    const productId = id.trim();
+    if (!productId) return { ok: false, error: "Product ID is required." };
+
+    await deleteItem(productId);
+    refreshStorefront();
+    refreshAdminViews();
+    return { ok: true, data: productId };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function updatePaymentAction(
   orderId: string,
+  itemId: string,
   status: OrderStatus,
 ): Promise<ActionResult<OrderStatus>> {
   try {
     await assertAdmin();
     const cleanOrderId = orderId.trim();
+    const cleanItemId = itemId.trim();
     if (!cleanOrderId) return { ok: false, error: "Order ID is required." };
-    if (status !== "Paid" && status !== "Pending") {
+    if (!cleanItemId) return { ok: false, error: "Item ID is required." };
+    if (!ORDER_STATUSES.includes(status)) {
       return { ok: false, error: "Payment status is invalid." };
     }
 
-    await withAdminToken((token) => updatePayment(token, cleanOrderId, status));
+    await updatePayment(cleanOrderId, cleanItemId, status);
     updateTag(SHEETS_TAGS.orders);
     refreshAdminViews();
     return { ok: true, data: status };

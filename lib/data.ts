@@ -1,11 +1,17 @@
 import "server-only";
 import { cache } from "react";
-import { withAdminToken } from "./admin-session";
 import { config, displaySettings } from "./config";
 import { withProductDetails } from "./normalize";
 import { withPictures } from "./product-images";
-import { getOrders, getProducts, SheetsError } from "./sheets";
-import type { DisplayProduct, DisplaySettings, Order } from "./types";
+import {
+  ApiError,
+  getAdminStats,
+  getItems,
+  getOrders,
+  getProducts,
+  type DeploymentReport,
+} from "./sheets";
+import type { AdminStats, DisplayProduct, DisplaySettings, Order } from "./types";
 
 export type MenuData = {
   products: DisplayProduct[];
@@ -17,6 +23,7 @@ export type MenuData = {
 export type AdminData = {
   products: DisplayProduct[];
   orders: Order[];
+  stats: AdminStats | null;
   settings: DisplaySettings;
   connected: boolean;
   error: string | null;
@@ -24,10 +31,7 @@ export type AdminData = {
 
 function notConfiguredMessage(): string | null {
   if (!config.googleScriptUrl) {
-    return "Google Apps Script is not configured. Set googleScriptUrl in lib/config.ts to load the live menu.";
-  }
-  if (!config.adminPassword) {
-    return "adminPassword is not set in lib/config.ts, so admin API calls cannot be authorised.";
+    return "The cafe backend is not configured. Set GOOGLE_SCRIPT_URL, or googleScriptUrl in lib/config.ts, to load the live menu.";
   }
   return null;
 }
@@ -36,7 +40,7 @@ function notConfiguredMessage(): string | null {
 export const loadMenu = cache(async (): Promise<MenuData> => {
   const settings = displaySettings();
   try {
-    const products = (await getProducts()).filter((product) => product.enabled);
+    const products = await getProducts();
     return { products: withPictures(products), settings, connected: true, error: null };
   } catch (error) {
     const reason = notConfiguredMessage();
@@ -46,30 +50,34 @@ export const loadMenu = cache(async (): Promise<MenuData> => {
       connected: false,
       error:
         reason ??
-        (error instanceof SheetsError
-          ? `We couldn't load the cafe data. ${error.message}`
-          : "We couldn't load the cafe data. Check the Apps Script deployment and try again."),
+        (error instanceof ApiError
+          ? error.message
+          : "We couldn't load the cafe data. Please try again."),
     };
   }
 });
 
 /**
- * Admin dashboard data. Both reads are uncached, so a page load or a TRY AGAIN
- * always reflects the sheet as it stands. The dashboard is low-traffic and is
- * where edits are verified, so freshness matters more here than on the
- * storefront, where the shared 60s cache absorbs the traffic.
+ * Admin dashboard data, read fresh so a page load or a TRY AGAIN always reflects
+ * the sheet as it stands. The dashboard is low-traffic and is where edits are
+ * verified, so freshness matters more here than on the storefront.
+ *
+ * The figures come from the backend's `adminStats` rather than being counted in
+ * the browser, so the overview and the sheet cannot disagree.
  */
 export const loadAdminData = cache(async (): Promise<AdminData> => {
   const settings = displaySettings();
   try {
-    const [rawProducts, orders] = await Promise.all([
-      getProducts({ fresh: true }),
-      withAdminToken(getOrders),
+    const [rawProducts, orders, stats] = await Promise.all([
+      getItems(),
+      getOrders(),
+      getAdminStats(),
     ]);
     const products = withPictures(rawProducts);
     return {
       products,
       orders: withProductDetails(orders, products),
+      stats,
       settings,
       connected: true,
       error: null,
@@ -79,13 +87,14 @@ export const loadAdminData = cache(async (): Promise<AdminData> => {
     return {
       products: [],
       orders: [],
+      stats: null,
       settings,
       connected: false,
       error:
         reason ??
-        (error instanceof SheetsError
-          ? error.message
-          : "We couldn't reach Google Sheets. Check the Apps Script deployment and try again."),
+        (error instanceof ApiError ? error.message : "We couldn't reach the cafe backend. Please try again."),
     };
   }
 });
+
+export type { DeploymentReport };

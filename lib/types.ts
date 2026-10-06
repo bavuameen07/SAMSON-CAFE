@@ -1,4 +1,37 @@
-export type OrderStatus = "Pending" | "Paid";
+/** The four payment states the Orders sheet and `updatePayment` both accept. */
+export type OrderStatus = "Pending" | "Paid" | "Failed" | "Cancelled";
+
+export const ORDER_STATUSES: readonly OrderStatus[] = [
+  "Pending",
+  "Paid",
+  "Failed",
+  "Cancelled",
+];
+
+export type Order = {
+  id: string;
+  itemId: string;
+  itemName: string;
+  image: string;
+  quantity: number;
+  total: number;
+  date: string;
+  status: OrderStatus;
+};
+
+/** The aggregate figures reported by the `adminStats` action. */
+export type AdminStats = {
+  totalItems: number;
+  totalStock: number;
+  lowStockItems: number;
+  outOfStockItems: number;
+  totalOrders: number;
+  pendingOrders: number;
+  paidOrders: number;
+  cancelledOrders: number;
+  failedOrders: number;
+  totalSales: number;
+};
 
 /** Where a product picture came from. See lib/product-images.ts. */
 export type PictureOrigin = "sheet" | "asset" | "generated" | "fallback";
@@ -24,22 +57,10 @@ export type Product = {
   image: string;
   stock: number;
   price: number;
-  enabled: boolean;
 };
 
 /** A sheet row plus the picture resolved from its name. */
 export type DisplayProduct = Product & { picture: ProductPicture };
-
-export type Order = {
-  id: string;
-  itemId: string;
-  itemName: string;
-  image: string;
-  quantity: number;
-  total: number;
-  date: string;
-  status: OrderStatus;
-};
 
 export type DisplaySettings = {
   currency: string;

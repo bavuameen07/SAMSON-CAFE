@@ -3,7 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import {
   createProductAction,
-  setProductEnabledAction,
+  deleteProductAction,
   updateProductAction,
 } from "@/app/actions";
 import { ProductImage } from "@/components/product-image";
@@ -18,13 +18,13 @@ import { Modal } from "@/components/ui/modal";
 import { Toast, useToast } from "@/components/ui/toast";
 import { formatMoney } from "@/lib/format";
 import type { DisplayProduct, DisplaySettings } from "@/lib/types";
-import { MenuBadge, StockBadge } from "./badges";
+import { StockBadge } from "./badges";
 import { AdminCard, AdminHeading, EmptyTable } from "./section";
 
 type Draft = { mode: "create" } | { mode: "edit"; product: DisplayProduct };
 
 const CELL = "border-b border-[#eff0f2] px-[11px] py-3";
-const HEADINGS = ["Product", "ID", "Stock", "Price", "Status", "Menu", "Action"];
+const HEADINGS = ["Product", "ID", "Stock", "Price", "Status", "Action"];
 
 type ProductsManagerProps = {
   products: DisplayProduct[];
@@ -35,6 +35,7 @@ export function ProductsManager({ products, settings }: ProductsManagerProps) {
   const [query, setQuery] = useState("");
   const [stockFilter, setStockFilter] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [deleting, setDeleting] = useState<DisplayProduct | null>(null);
   const [pending, startTransition] = useTransition();
   const { toast, showToast } = useToast();
 
@@ -50,13 +51,17 @@ export function ProductsManager({ products, settings }: ProductsManagerProps) {
     });
   }, [products, query, stockFilter, threshold]);
 
-  function toggleEnabled(product: DisplayProduct) {
+  function confirmDelete() {
+    const product = deleting;
+    if (!product) return;
     startTransition(async () => {
-      const result = await setProductEnabledAction(product.id, !product.enabled);
-      showToast(
-        result.ok ? `Product ${product.enabled ? "disabled" : "enabled"}.` : result.error,
-        result.ok ? "info" : "error",
-      );
+      const result = await deleteProductAction(product.id);
+      if (!result.ok) {
+        showToast(result.error, "error");
+        return;
+      }
+      setDeleting(null);
+      showToast(`${product.name} deleted.`, "info");
     });
   }
 
@@ -153,23 +158,21 @@ export function ProductsManager({ products, settings }: ProductsManagerProps) {
                       <StockBadge stock={product.stock} threshold={threshold} />
                     </td>
                     <td className={CELL}>
-                      <MenuBadge enabled={product.enabled} />
-                    </td>
-                    <td className={CELL}>
                       <button
                         type="button"
                         onClick={() => setDraft({ mode: "edit", product })}
+                        disabled={pending}
                         className={textButtonClasses()}
                       >
                         EDIT
                       </button>
                       <button
                         type="button"
-                        onClick={() => toggleEnabled(product)}
+                        onClick={() => setDeleting(product)}
                         disabled={pending}
                         className={textButtonClasses()}
                       >
-                        {product.enabled ? "DISABLE" : "ENABLE"}
+                        DELETE
                       </button>
                     </td>
                   </tr>
@@ -188,6 +191,38 @@ export function ProductsManager({ products, settings }: ProductsManagerProps) {
           onClose={() => setDraft(null)}
           onSubmit={save}
         />
+      ) : null}
+
+      {deleting ? (
+        <Modal
+          title="Delete product"
+          onClose={() => setDeleting(null)}
+          footer={
+            <>
+              <button
+                type="button"
+                onClick={() => setDeleting(null)}
+                disabled={pending}
+                className={buttonClasses("adminLight")}
+              >
+                CANCEL
+              </button>
+              <button
+                type="button"
+                onClick={confirmDelete}
+                disabled={pending}
+                className={buttonClasses("admin")}
+              >
+                {pending ? "DELETING…" : "DELETE PRODUCT"}
+              </button>
+            </>
+          }
+        >
+          <p className="text-[13px] leading-[1.6] text-[#555]">
+            This removes <strong>{deleting.name}</strong> from the Items sheet and from the storefront
+            menu. Existing orders keep their history. This cannot be undone.
+          </p>
+        </Modal>
       ) : null}
 
       <Toast toast={toast} />

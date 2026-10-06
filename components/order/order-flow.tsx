@@ -50,22 +50,12 @@ type OrderFlowProps = {
   settings: DisplaySettings;
 };
 
-function newRequestId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
 export function OrderFlow({ product, settings }: OrderFlowProps) {
   const [step, setStep] = useState<Step>(1);
   const [quantity, setQuantity] = useState(1);
   const [error, setError] = useState("");
   const [placedOrder, setPlacedOrder] = useState<Order | null>(null);
   const [pending, startTransition] = useTransition();
-  // Held for the life of this attempt so a retry after a timeout reuses the same
-  // idempotency key and cannot produce a second order.
-  const [requestId] = useState(newRequestId);
 
   const total = product.price * quantity;
   const soldOut = product.stock < 1;
@@ -81,7 +71,9 @@ export function OrderFlow({ product, settings }: OrderFlowProps) {
 
   function placeOrder() {
     startTransition(async () => {
-      const result = await placeOrderAction(product.id, quantity, requestId);
+      // `pending` is disabled on the button, so a double tap cannot send a second
+      // order while the first is still in flight.
+      const result = await placeOrderAction(product.id, quantity);
       if (!result.ok) {
         setError(result.error);
         return;
